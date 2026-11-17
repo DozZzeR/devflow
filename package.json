@@ -1,0 +1,14 @@
+{
+  "name": "devflow",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Role-separated, multi-model dev workflow with deterministic gates; OpenSpec-compatible.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@fission-ai/openspec": "2.1.0"
+  }
+}
