@@ -9,6 +9,22 @@
   },
   "license": "UNLICENSED",
   "devDependencies": {
-    "@fission-ai/openspec": "2.1.0"
-  }
+    "@fission-ai/openspec": "2.1.0",
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "bin": {
+    "devflow": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "files": [
+    "dist/src"
+  ]
 }

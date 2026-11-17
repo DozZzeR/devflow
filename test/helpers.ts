@@ -1,0 +1,35 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after } from "node:test";
+import { parseConfig, DEFAULT_CONFIG, type Config } from "../src/config.js";
+import { newTask, transition, type Event, type TaskState, type Tier } from "../src/lifecycle.js";
+
+export const NOW = "2026-11-17T12:00:00.000Z";
+
+export function config(overrides: { limits?: Partial<Config["limits"]> } = {}): Config {
+  return parseConfig({
+    ...structuredClone(DEFAULT_CONFIG),
+    limits: { ...DEFAULT_CONFIG.limits, ...overrides.limits },
+  });
+}
+
+export function task(tier: Tier = "medium"): TaskState {
+  return newTask("t1", "test task", tier, undefined, NOW);
+}
+
+/** Apply events in order. */
+export function play(t: TaskState, cfg: Config, ...events: Event[]): TaskState {
+  return events.reduce((s, e) => transition(s, e, cfg, NOW), t);
+}
+
+export const ok = (stage: "explore" | "design" | "implement" | "gates"): Event => ({ kind: "complete", stage, outcome: "ok" });
+export const fail = (stage: "explore" | "design" | "implement" | "gates"): Event => ({ kind: "complete", stage, outcome: "fail" });
+export const verify = (outcome: "pass" | "rework" | "human"): Event => ({ kind: "complete", stage: "verify", outcome });
+
+/** A temp dir removed after the test file finishes. */
+export function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "devflow-test-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}

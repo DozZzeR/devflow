@@ -33,7 +33,7 @@ Empty repo with `docs/SPEC.md`, OpenSpec 2.1.0 and a bare `package.json`. Node 2
 
 9. **CLI without a framework.** Hand-written argv parsing (7 commands, few flags) instead of commander/yargs, keeping runtime deps to `zod` only. Exit codes: 0 ok, 1 domain error (with `reason` in JSON on stderr when `--json`), 2 usage error.
 
-10. **Build.** `tsc` to `dist/`, ESM, `"bin": { "devflow": "dist/cli.js" }`. Tests run against compiled output with `node --test dist/test`; this avoids a TS loader dependency.
+10. **Build.** `tsc` to `dist/`, ESM, `"bin": { "devflow": "dist/src/cli.js" }`. Tests run against compiled output with `node --test dist/test/**/*.test.js`; this avoids a TS loader dependency.
 
 ## Impact zone
 
@@ -49,7 +49,7 @@ Empty repo with `docs/SPEC.md`, OpenSpec 2.1.0 and a bare `package.json`. Node 2
 ## Test plan
 
 - `test/lifecycle.test.ts`: every scenario of `specs/task-lifecycle/spec.md` against the pure reducer: stage order per tier, out-of-order rejection, rework routing, limits → HUMAN, approve/resume/tier rules, escalation paths including `complex` refusal.
-- `test/config.test.ts`: every scenario of `specs/project-config/spec.md`: valid load, unknown field, missing role, command runner without template, init fresh / idempotent (in a temp dir).
+- `test/config.test.ts`: every scenario of `specs/project-config/spec.md`: valid load, default and explicit language, unknown field, missing role, command runner without template, init fresh / idempotent (in a temp dir).
 - `test/store.test.ts`: atomic write leaves no partial file; invalid JSON and unknown schema → `invalid_state` without overwrite; duplicate start refused.
 - `test/cli.test.ts`: spawn `node dist/cli.js` in a temp project: `init → start → next → complete …` happy path for small and medium, exit codes, `--json` output shape.
 

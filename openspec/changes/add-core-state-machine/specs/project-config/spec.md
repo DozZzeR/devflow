@@ -9,6 +9,20 @@ The system SHALL read project configuration from `.devflow/config.json` at the p
 - **WHEN** `.devflow/config.json` matches the schema
 - **THEN** commands that need configuration run normally
 
+### Requirement: Artifact language
+
+The configuration SHALL accept an optional `language` field (BCP 47 tag, for example `en` or `ru`) that sets the language of human-readable artifacts devflow writes and asks roles to write. When absent, the language SHALL be `en`.
+
+#### Scenario: Default language
+
+- **WHEN** the config has no `language` field
+- **THEN** the loaded configuration reports language `en`
+
+#### Scenario: Explicit language
+
+- **WHEN** the config has `"language": "ru"`
+- **THEN** the loaded configuration reports language `ru`
+
 ### Requirement: Strict validation
 
 The system MUST reject a configuration with unknown fields, missing required fields or wrong types, reporting every problem with its JSON path, and MUST NOT fall back to defaults for an invalid file.
