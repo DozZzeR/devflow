@@ -54,6 +54,16 @@ export function parsePlanConflict(output: string): string | undefined {
   return found;
 }
 
+/** The implementer's "BLOCKED: ..." line, if its answer has one (the last one wins). */
+export function parseBlocked(output: string): string | undefined {
+  let found: string | undefined;
+  for (const t of answerLines(output)) {
+    const m = /^BLOCKED:\s*(.+)$/.exec(t);
+    if (m) found = m[1]!.trim();
+  }
+  return found;
+}
+
 /** Last line that is a verdict, from plain output or from claude's JSON "result". */
 export function parseReview(output: string): { verdict: "approve" | "reject"; reason?: string } | undefined {
   let found: { verdict: "approve" | "reject"; reason?: string } | undefined;

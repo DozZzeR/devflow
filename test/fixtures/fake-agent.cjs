@@ -42,6 +42,8 @@ process.stdin.on("end", () => {
     write(`${dir}/design.md`, "# Design\n\n## Context\n\nSmall.\n\n## Decisions\n\nSECRET-DESIGN-REASONING: use a loop.\n\n## Impact zone\n\n- `src/**`\n- `tests/**`\n\n## Test plan\n\n- tests/mul.test.js checks mul(2,3) = 6.\n");
     write(`${dir}/tasks.md`, "# Tasks\n\n## 1. Mul\n\n- [ ] 1.1 Add mul and its test; verify with node check.js\n");
     write(`${dir}/specs/math/spec.md`, "## Purpose\n\nArithmetic helpers.\n\n## ADDED Requirements\n\n### Requirement: Multiply\n\nThe system SHALL multiply two numbers.\n\n#### Scenario: Two and three\n\n- **WHEN** mul(2, 3) is called\n- **THEN** it returns 6\n");
+  } else if (prompt.includes("You are the IMPLEMENT") && env.FAKE_BLOCKED) {
+    console.log(`BLOCKED: ${env.FAKE_BLOCKED}`);
   } else if (prompt.includes("You are the IMPLEMENT") && env.FAKE_PLAN_CONFLICT) {
     console.log("The plan contradicts the finding.");
     console.log(`PLAN CONFLICT: ${env.FAKE_PLAN_CONFLICT}`);

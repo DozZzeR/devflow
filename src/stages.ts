@@ -11,7 +11,7 @@ import { block, composePrompt, loadTemplate, section, type PromptStage } from ".
 import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
 import { loadTask, saveTask } from "./store.js";
-import { parsePlanConflict, runDelegatedReview } from "./review.js";
+import { parseBlocked, parsePlanConflict, runDelegatedReview } from "./review.js";
 
 export interface StageIo {
   now: () => string;
@@ -318,7 +318,13 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
         reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config.test.command] });
-      const conflict = r.ok && !small && r.log ? parsePlanConflict(read(r.log)) : undefined;
+      const answer = r.ok && r.log ? read(r.log) : "";
+      const blocked = answer ? parseBlocked(answer) : undefined;
+      if (blocked) {
+        task = record(root, task, { kind: "blocked", stage: "implement", reason: blocked }, config, io);
+        return report("blocked", task, blocked, r);
+      }
+      const conflict = answer && !small ? parsePlanConflict(answer) : undefined;
       if (conflict) {
         task = record(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config, io);
         return report("plan_conflict", task, conflict, r);

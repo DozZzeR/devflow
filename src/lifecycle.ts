@@ -30,7 +30,7 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
 
 const HistoryEntrySchema = z.object({
   at: z.string(),
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
   stage: z.enum(STAGES).optional(),
   gate: z.string().optional(),
   results: z.string().optional(),
@@ -87,6 +87,7 @@ export type Event =
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
   | { kind: "reject"; reason: string; revision?: number; by?: "model" }
   | { kind: "plan_conflict"; reason: string }
+  | { kind: "blocked"; stage: Stage; reason: string }
   | { kind: "delegate"; to: "human" | "model" }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
@@ -353,7 +354,18 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       t.status = "EXPLORED";
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
+      // A new plan starts with fresh implement and verify attempts.
+      t.attempts.implement = 0;
+      t.attempts.verify = 0;
       t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...(event.by ? { results: "by model" } : {}) });
+      return t;
+    }
+
+    case "blocked": {
+      // The role could not work for a reason outside the task (access, tools): a human fixes the environment
+      // and resumes. No attempt is spent.
+      toHuman("role_blocked");
+      t.history.push({ at: now, kind: "blocked", stage: event.stage, reason: event.reason });
       return t;
     }
 

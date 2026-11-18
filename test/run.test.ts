@@ -15,7 +15,7 @@ function setup(extra: Record<string, string> = {}) {
   const cfgPath = join(root, ".devflow", "config.json");
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   cfg.openspec = { cli: "off" };
-  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE", "FAKE_PLAN_CONFLICT", "FAKE_VERDICT_IN_ANSWER"] } };
+  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE", "FAKE_PLAN_CONFLICT", "FAKE_VERDICT_IN_ANSWER", "FAKE_BLOCKED"] } };
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   sh(root, "git", ["add", "-A"]);
   sh(root, "git", ["commit", "-q", "-m", "config"]);
@@ -192,6 +192,33 @@ test("a verify round that produced no verdict does not lose the earlier findings
   const round3 = readFileSync(join(prompts, verifies.at(-1)!), "utf8");
   assert.match(round3, /This is round 3/);
   assert.match(round3, /VERDICT: REWORK\n\ndesign-visible: no/);
+});
+
+test("a blocked implementer stops the task for a human without spending an attempt", () => {
+  const { devflow, devflowWith, state, lines, prompts } = setup();
+  devflow("start", "tbl", "Add mul");
+  devflow("run", "tbl");
+  devflow("approve", "tbl");
+  const r = lines(devflowWith({ FAKE_BLOCKED: "cannot read the guidance file" }, "run", "tbl").out)[0];
+  assert.deepEqual([r.stage, r.outcome, r.reason], ["implement", "blocked", "cannot read the guidance file"]);
+  const s = state("tbl");
+  assert.deepEqual([s.status, s.humanReason, s.attempts.implement], ["HUMAN", "role_blocked", 0]);
+  assert.doesNotMatch(implementPrompts(prompts)[0]!, /^BLOCKED:/m);
+  assert.equal(devflow("approve", "tbl", "--resume").code, 0);
+  assert.equal(lines(devflow("run", "tbl", "--once").out)[0].outcome, "ok");
+});
+
+test("rejecting a plan gives the new revision fresh implement attempts", () => {
+  const { devflow, devflowWith, state } = setup();
+  devflow("start", "tra", "Add mul");
+  devflow("run", "tra");
+  devflow("approve", "tra");
+  devflowWith({ FAKE_PLAN_CONFLICT: "needs a different design" }, "run", "tra", "--once");
+  devflow("run", "tra", "--once");
+  assert.equal(state("tra").status, "DESIGNED");
+  devflow("approve", "tra");
+  devflow("run", "tra", "--once");
+  assert.equal(state("tra").attempts.implement, 1);
 });
 
 test("an edit between gates and verify sends the task back to gates", () => {
