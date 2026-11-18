@@ -2,8 +2,8 @@
   "language": "en",
   "roles": {
     "explore": {
-      "runner": "claude",
-      "model": "haiku"
+      "runner": "codex",
+      "model": "gpt-5.6-luna"
     },
     "design": {
       "runner": "claude",
@@ -11,19 +11,19 @@
     },
     "design_complex": {
       "runner": "claude",
-      "model": "fable"
+      "model": "opus"
     },
     "implement": {
-      "runner": "claude",
-      "model": "sonnet"
-    },
-    "verify": {
       "runner": "codex",
       "model": "gpt-6.2-sol"
     },
-    "small": {
+    "verify": {
       "runner": "claude",
       "model": "sonnet"
+    },
+    "small": {
+      "runner": "codex",
+      "model": "gpt-6.2-sol"
     }
   },
   "limits": {
