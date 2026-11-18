@@ -38,12 +38,17 @@ Each run SHALL receive a write scope (zero or more path globs relative to the pr
 
 ### Requirement: Write-scope enforcement mode
 
-The result SHALL state how the scope was applied: `enforced` (devflow blocks, before execution, every write outside the scope and every shell command not allowed, regardless of the user's own CLI permission settings), `sandbox` (the CLI sandbox limits writes to its workspace and temporary locations; globs not enforced) or `advisory` (nothing enforced). `enforced` covers file-editing tools and the shell-command allowlist; an allowed shell command itself is not filesystem-sandboxed, which the zone gate covers after the run. A runner MUST NOT report `enforced` unless that blocking was active for the run.
+The result SHALL state how the scope was applied: `enforced` (devflow blocks, before execution, every write outside the scope and every shell command not allowed, regardless of the user's own CLI permission settings), `sandbox` (the CLI sandbox limits writes to its workspace and temporary locations; globs not enforced) or `advisory` (nothing enforced). A runner MUST NOT report `enforced` unless that blocking was active for the run.
 
 #### Scenario: Claude scoped writes
 
 - **WHEN** a `claude` role runs with write scope `src/**` and the user's own Claude settings allow all edits
 - **THEN** an edit to `README.md` is blocked, an edit to `src/a.ts` is allowed, and the result reports `enforced`
+
+#### Scenario: Allowed shell command is not sandboxed
+
+- **WHEN** a `claude` run allows `npm test` and that command writes outside the scope
+- **THEN** the run still reports `enforced` for editing tools, and the write is left for the zone gate to detect
 
 #### Scenario: Codex read-only
 
