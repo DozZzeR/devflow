@@ -20914,7 +20914,14 @@ function transition(task, event, config2, now) {
       t.status = "EXPLORED";
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
+      t.attempts.implement = 0;
+      t.attempts.verify = 0;
       t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...event.by ? { results: "by model" } : {} });
+      return t;
+    }
+    case "blocked": {
+      toHuman("role_blocked");
+      t.history.push({ at: now, kind: "blocked", stage: event.stage, reason: event.reason });
       return t;
     }
     case "plan_conflict": {
@@ -21026,7 +21033,7 @@ var init_lifecycle = __esm({
     };
     HistoryEntrySchema = external_exports.object({
       at: external_exports.string(),
-      kind: external_exports.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review"]),
+      kind: external_exports.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
       stage: external_exports.enum(STAGES).optional(),
       gate: external_exports.string().optional(),
       results: external_exports.string().optional(),
@@ -40133,6 +40140,7 @@ Outputs: {{outputs}}
   implement: COMMON_HEADER.replace("{{role}}", "IMPLEMENT") + `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
 Stay inside the impact zone. You may run the test command: {{testCommand}}
 Do not edit proposal.md, design.md or spec deltas. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
+If you cannot work at all for a reason outside the plan (a file or tool you need is not accessible), change nothing and make your final line the word BLOCKED, a colon, and what is missing. Instructions outside the project that you cannot read are not a reason to stop: continue without them and mention it.
 
 {{context}}
 
@@ -40307,6 +40315,14 @@ function parsePlanConflict(output2) {
   let found;
   for (const t of answerLines(output2)) {
     const m = /^PLAN CONFLICT:\s*(.+)$/.exec(t);
+    if (m) found = m[1].trim();
+  }
+  return found;
+}
+function parseBlocked(output2) {
+  let found;
+  for (const t of answerLines(output2)) {
+    const m = /^BLOCKED:\s*(.+)$/.exec(t);
     if (m) found = m[1].trim();
   }
   return found;
@@ -40639,7 +40655,13 @@ async function runNextStage(root, workingConfig, id, io) {
       const ctx = (small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z2) => `- ${z2}`).join("\n"))) + reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config2.test.command] });
-      const conflict = r.ok && !small && r.log ? parsePlanConflict(read(r.log)) : void 0;
+      const answer = r.ok && r.log ? read(r.log) : "";
+      const blocked2 = answer ? parseBlocked(answer) : void 0;
+      if (blocked2) {
+        task = record2(root, task, { kind: "blocked", stage: "implement", reason: blocked2 }, config2, io);
+        return report("blocked", task, blocked2, r);
+      }
+      const conflict = answer && !small ? parsePlanConflict(answer) : void 0;
       if (conflict) {
         task = record2(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config2, io);
         return report("plan_conflict", task, conflict, r);
