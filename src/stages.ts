@@ -11,7 +11,7 @@ import { block, composePrompt, loadTemplate, section, type PromptStage } from ".
 import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
 import { loadTask, saveTask } from "./store.js";
-import { runDelegatedReview } from "./review.js";
+import { parsePlanConflict, runDelegatedReview } from "./review.js";
 
 export interface StageIo {
   now: () => string;
@@ -68,6 +68,27 @@ function changeContext(root: string, id: string, include: (f: string) => boolean
 function verdictOf(text: string): "pass" | "rework" | "human" | undefined {
   const first = text.replace(/^﻿/, "").split(/\r?\n/).find((l) => l.trim())?.trim().toUpperCase() ?? "";
   return first === "VERDICT: PASS" ? "pass" : first === "VERDICT: REWORK" ? "rework" : first === "VERDICT: HUMAN" ? "human" : undefined;
+}
+
+/**
+ * The verdict from claude's structured JSON answer, from its "VERDICT:" line on. Only the JSON "result" is
+ * read: a plain log may echo the prompt, which can quote an earlier verdict.
+ */
+function verdictFromAnswer(log: string): string | undefined {
+  for (const line of log.split(/\r?\n/).reverse()) {
+    const t = line.trim();
+    if (!t.startsWith("{") || !t.includes('"result"')) continue;
+    try {
+      const result = (JSON.parse(t) as { result?: unknown }).result;
+      if (typeof result !== "string") continue;
+      const lines = result.split(/\r?\n/);
+      const at = lines.findIndex((l) => verdictOf(l.replace(/^\*\*|\*\*$/g, "")) !== undefined);
+      if (at >= 0) return [lines[at]!.replace(/^\*\*|\*\*$/g, ""), ...lines.slice(at + 1)].join("\n").trim() + "\n";
+    } catch {
+      /* not JSON */
+    }
+  }
+  return undefined;
 }
 
 function gatesSummary(task: TaskState): string {
@@ -256,7 +277,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
         block("Exploration notes", read(join(runsDir(root, id), "facts.md"))) +
         block("Living specs (read as needed)", livingSpecs(root)) +
         block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) +
-        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "");
+        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
       // A first design must produce every file fresh. A revision after a rejection may keep files that
       // were fine, but must change the plan.
       const revision = rejections.length > 0;
@@ -288,6 +309,11 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
         reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config.test.command] });
+      const conflict = r.ok && !small && r.log ? parsePlanConflict(read(r.log)) : undefined;
+      if (conflict) {
+        task = record(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config, io);
+        return report("plan_conflict", task, conflict, r);
+      }
       task = record(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config, io);
       return report(r.ok ? "ok" : "fail", task, r.ok ? undefined : "run_failed", r);
     }
@@ -329,14 +355,14 @@ async function runVerify(
 
   const folder = changeFolder(root, id);
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
+  const changes = changeSet(root, task.base!);
   const ctx =
     deltas +
     block(`openspec/changes/${id}/tasks.md`, read(join(folder, "tasks.md"))) +
     block("Test plan (from the design)", section(read(join(folder, "design.md")), "Test plan")) +
-    block("Changed files", changeSet(root, task.base!).map((p) => `- ${p}`).join("\n")) +
+    block("Changed files", changes.map((p) => `- ${p}`).join("\n")) +
     block("Gate results", gatesSummary(task));
 
-  const changes = changeSet(root, task.base!);
   let wt: { path: string; projectDir: string } | undefined;
   let r: RunResult | undefined;
   let failure: string | undefined;
@@ -365,7 +391,18 @@ async function runVerify(
       } else if (existsSync(produced)) {
         failure = "unsafe_verdict";
       }
-      if (!r.ok) failure = "verify_run_failed";
+      if (!r.ok) {
+        // A verifier that answered with the verdict instead of writing the file still gave one.
+        const answered = !existsSync(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log
+          ? verdictFromAnswer(read(r.log))
+          : undefined;
+        if (answered) {
+          mkdirSync(dirname(verdictPath), { recursive: true });
+          writeFileSync(verdictPath, answered);
+        } else {
+          failure = "verify_run_failed";
+        }
+      }
     }
   } catch (e) {
     failure = e instanceof DevflowError ? e.reason : "verify_error";

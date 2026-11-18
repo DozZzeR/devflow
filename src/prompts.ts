@@ -62,7 +62,7 @@ Outputs: {{outputs}}
     COMMON_HEADER.replace("{{role}}", "IMPLEMENT") +
     `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
 Stay inside the impact zone. You may run the test command: {{testCommand}}
-Do not edit proposal.md, design.md or spec deltas; if the plan is wrong, stop and say so in your final message.
+Do not edit proposal.md, design.md or spec deltas. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 
 {{context}}
 

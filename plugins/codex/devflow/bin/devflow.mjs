@@ -20917,6 +20917,24 @@ function transition(task, event, config2, now) {
       t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...event.by ? { results: "by model" } : {} });
       return t;
     }
+    case "plan_conflict": {
+      if (task.status !== "PLAN_APPROVED" || task.tier === "small") {
+        throw new DevflowError("no_approved_plan", `Task ${task.id} has no approved plan to send back (status: ${task.status}).`);
+      }
+      const conflicts = task.history.filter((h) => h.kind === "reject" && h.results === "by implement").length;
+      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
+      if (conflicts >= PLAN_CONFLICT_LIMIT - 1) {
+        toHuman("plan_conflicts_limit");
+        return t;
+      }
+      t.status = "EXPLORED";
+      delete t.planDigest;
+      delete t.gatesSnapshot;
+      t.planRevision = (t.planRevision ?? 1) + 1;
+      t.attempts.implement = 0;
+      t.attempts.verify = 0;
+      return t;
+    }
     case "approve": {
       if (task.status !== "DESIGNED") {
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
@@ -20981,7 +20999,7 @@ function applyTierChange(t, to) {
     t.status = "PLAN_APPROVED";
   }
 }
-var TIERS, STATES, STAGES, OUTCOMES, HistoryEntrySchema, COUNTERS_ZERO, TaskStateSchema, ZERO_ATTEMPTS, TIER_ORDER;
+var TIERS, STATES, STAGES, OUTCOMES, HistoryEntrySchema, PLAN_CONFLICT_LIMIT, COUNTERS_ZERO, TaskStateSchema, ZERO_ATTEMPTS, TIER_ORDER;
 var init_lifecycle = __esm({
   "src/lifecycle.ts"() {
     "use strict";
@@ -21017,6 +21035,7 @@ var init_lifecycle = __esm({
       to: external_exports.string().optional(),
       reason: external_exports.string().optional()
     });
+    PLAN_CONFLICT_LIMIT = 2;
     COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
     TaskStateSchema = external_exports.strictObject({
       schema: external_exports.literal(2),
@@ -40113,7 +40132,7 @@ Outputs: {{outputs}}
 `,
   implement: COMMON_HEADER.replace("{{role}}", "IMPLEMENT") + `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
 Stay inside the impact zone. You may run the test command: {{testCommand}}
-Do not edit proposal.md, design.md or spec deltas; if the plan is wrong, stop and say so in your final message.
+Do not edit proposal.md, design.md or spec deltas. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 
 {{context}}
 
@@ -40270,7 +40289,7 @@ function reviewRole(config2) {
   }
   return role2;
 }
-function parseReview(output2) {
+function answerLines(output2) {
   const texts = [output2];
   for (const line of output2.split(/\r?\n/)) {
     const t = line.trim();
@@ -40282,14 +40301,22 @@ function parseReview(output2) {
       }
     }
   }
+  return texts.flatMap((text2) => text2.split(/\r?\n/).map((l) => l.trim().replace(/^\*\*|\*\*$/g, "")));
+}
+function parsePlanConflict(output2) {
   let found;
-  for (const text2 of texts) {
-    for (const line of text2.split(/\r?\n/)) {
-      const t = line.trim().replace(/^\*\*|\*\*$/g, "");
-      if (/^APPROVE\b/.test(t)) found = { verdict: "approve" };
-      const m = /^REJECT:\s*(.+)$/.exec(t);
-      if (m) found = { verdict: "reject", reason: m[1].trim() };
-    }
+  for (const t of answerLines(output2)) {
+    const m = /^PLAN CONFLICT:\s*(.+)$/.exec(t);
+    if (m) found = m[1].trim();
+  }
+  return found;
+}
+function parseReview(output2) {
+  let found;
+  for (const t of answerLines(output2)) {
+    if (/^APPROVE\b/.test(t)) found = { verdict: "approve" };
+    const m = /^REJECT:\s*(.+)$/.exec(t);
+    if (m) found = { verdict: "reject", reason: m[1].trim() };
   }
   return found;
 }
@@ -40407,6 +40434,21 @@ function changeContext(root, id, include) {
 function verdictOf(text2) {
   const first = text2.replace(/^﻿/, "").split(/\r?\n/).find((l) => l.trim())?.trim().toUpperCase() ?? "";
   return first === "VERDICT: PASS" ? "pass" : first === "VERDICT: REWORK" ? "rework" : first === "VERDICT: HUMAN" ? "human" : void 0;
+}
+function verdictFromAnswer(log) {
+  for (const line of log.split(/\r?\n/).reverse()) {
+    const t = line.trim();
+    if (!t.startsWith("{") || !t.includes('"result"')) continue;
+    try {
+      const result = JSON.parse(t).result;
+      if (typeof result !== "string") continue;
+      const lines = result.split(/\r?\n/);
+      const at = lines.findIndex((l) => verdictOf(l.replace(/^\*\*|\*\*$/g, "")) !== void 0);
+      if (at >= 0) return [lines[at].replace(/^\*\*|\*\*$/g, ""), ...lines.slice(at + 1)].join("\n").trim() + "\n";
+    } catch {
+    }
+  }
+  return void 0;
 }
 function gatesSummary(task) {
   const last = [...task.history].reverse().find((h) => h.kind === "gates");
@@ -40563,7 +40605,7 @@ async function runNextStage(root, workingConfig, id, io) {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
       const rejections = task.history.filter((h) => h.kind === "reject").map((h) => `- ${h.reason ?? ""}`).join("\n");
-      const ctx = block("Exploration notes", read(join15(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "");
+      const ctx = block("Exploration notes", read(join15(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
       const revision = rejections.length > 0;
       const filesBefore = revision ? planDigest(root, id) : "";
       const required2 = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
@@ -40590,6 +40632,11 @@ async function runNextStage(root, workingConfig, id, io) {
       const ctx = (small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z2) => `- ${z2}`).join("\n"))) + reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config2.test.command] });
+      const conflict = r.ok && !small && r.log ? parsePlanConflict(read(r.log)) : void 0;
+      if (conflict) {
+        task = record2(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config2, io);
+        return report("plan_conflict", task, conflict, r);
+      }
       task = record2(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config2, io);
       return report(r.ok ? "ok" : "fail", task, r.ok ? void 0 : "run_failed", r);
     }
@@ -40620,8 +40667,8 @@ async function runVerify(root, task, workingConfig, io, report) {
   }
   const folder = changeFolder(root, id);
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
-  const ctx = deltas + block(`openspec/changes/${id}/tasks.md`, read(join15(folder, "tasks.md"))) + block("Test plan (from the design)", section(read(join15(folder, "design.md")), "Test plan")) + block("Changed files", changeSet(root, task.base).map((p) => `- ${p}`).join("\n")) + block("Gate results", gatesSummary(task));
   const changes = changeSet(root, task.base);
+  const ctx = deltas + block(`openspec/changes/${id}/tasks.md`, read(join15(folder, "tasks.md"))) + block("Test plan (from the design)", section(read(join15(folder, "design.md")), "Test plan")) + block("Changed files", changes.map((p) => `- ${p}`).join("\n")) + block("Gate results", gatesSummary(task));
   let wt;
   let r;
   let failure2;
@@ -40649,7 +40696,15 @@ async function runVerify(root, task, workingConfig, io, report) {
       } else if (existsSync12(produced)) {
         failure2 = "unsafe_verdict";
       }
-      if (!r.ok) failure2 = "verify_run_failed";
+      if (!r.ok) {
+        const answered = !existsSync12(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log ? verdictFromAnswer(read(r.log)) : void 0;
+        if (answered) {
+          mkdirSync6(dirname6(verdictPath), { recursive: true });
+          writeFileSync7(verdictPath, answered);
+        } else {
+          failure2 = "verify_run_failed";
+        }
+      }
     }
   } catch (e) {
     failure2 = e instanceof DevflowError ? e.reason : "verify_error";

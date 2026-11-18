@@ -42,6 +42,9 @@ process.stdin.on("end", () => {
     write(`${dir}/design.md`, "# Design\n\n## Context\n\nSmall.\n\n## Decisions\n\nSECRET-DESIGN-REASONING: use a loop.\n\n## Impact zone\n\n- `src/**`\n- `tests/**`\n\n## Test plan\n\n- tests/mul.test.js checks mul(2,3) = 6.\n");
     write(`${dir}/tasks.md`, "# Tasks\n\n## 1. Mul\n\n- [ ] 1.1 Add mul and its test; verify with node check.js\n");
     write(`${dir}/specs/math/spec.md`, "## Purpose\n\nArithmetic helpers.\n\n## ADDED Requirements\n\n### Requirement: Multiply\n\nThe system SHALL multiply two numbers.\n\n#### Scenario: Two and three\n\n- **WHEN** mul(2, 3) is called\n- **THEN** it returns 6\n");
+  } else if (prompt.includes("You are the IMPLEMENT") && env.FAKE_PLAN_CONFLICT) {
+    console.log("The plan contradicts the finding.");
+    console.log(`PLAN CONFLICT: ${env.FAKE_PLAN_CONFLICT}`);
   } else if (prompt.includes("You are the IMPLEMENT")) {
     write("src/math.js", "exports.add = (a, b) => a + b;\nexports.mul = (a, b) => a * b;\n");
     write("tests/mul.test.js", "const { mul } = require('../src/math'); if (mul(2, 3) !== 6) throw new Error('mul');\n");
@@ -52,7 +55,10 @@ process.stdin.on("end", () => {
     const designVisible = fs.existsSync(`openspec/changes/${id}/design.md`) ? "yes" : "no";
     const leaked = prompt.includes("SECRET-DESIGN-REASONING") ? "yes" : "no";
     console.log(`git-visible: ${fs.existsSync(".git") ? "yes" : "no"}`);
-    write(".devflow-verdict.md", `VERDICT: ${env.FAKE_VERDICT || "PASS"}\n\ndesign-visible: ${designVisible}\nreasoning-in-prompt: ${leaked}\n`);
+    const verdict = `VERDICT: ${env.FAKE_VERDICT || "PASS"}\n\ndesign-visible: ${designVisible}\nreasoning-in-prompt: ${leaked}\n`;
+    // Like `claude -p --output-format json` when the model answers instead of writing the file.
+    if (env.FAKE_VERDICT_IN_ANSWER) console.log(JSON.stringify({ type: "result", result: `Checked.\n\n**${verdict.replace("\n", "**\n")}` }));
+    else write(".devflow-verdict.md", verdict);
   }
   console.log("fake agent done");
   if (env.FAKE_AGENT_SLEEP) setTimeout(() => process.exit(0), Number(env.FAKE_AGENT_SLEEP));

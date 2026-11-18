@@ -27,8 +27,8 @@ export function reviewRole(config: Config): Role {
   return role;
 }
 
-/** Last line that is a verdict, from plain output or from claude's JSON "result". */
-export function parseReview(output: string): { verdict: "approve" | "reject"; reason?: string } | undefined {
+/** The lines a role answered with: plain output plus the text of claude's JSON "result", markdown bold stripped. */
+export function answerLines(output: string): string[] {
   const texts = [output];
   for (const line of output.split(/\r?\n/)) {
     const t = line.trim();
@@ -41,14 +41,26 @@ export function parseReview(output: string): { verdict: "approve" | "reject"; re
       }
     }
   }
+  return texts.flatMap((text) => text.split(/\r?\n/).map((l) => l.trim().replace(/^\*\*|\*\*$/g, "")));
+}
+
+/** The implementer's "PLAN CONFLICT: ..." line, if its answer has one (the last one wins). */
+export function parsePlanConflict(output: string): string | undefined {
+  let found: string | undefined;
+  for (const t of answerLines(output)) {
+    const m = /^PLAN CONFLICT:\s*(.+)$/.exec(t);
+    if (m) found = m[1]!.trim();
+  }
+  return found;
+}
+
+/** Last line that is a verdict, from plain output or from claude's JSON "result". */
+export function parseReview(output: string): { verdict: "approve" | "reject"; reason?: string } | undefined {
   let found: { verdict: "approve" | "reject"; reason?: string } | undefined;
-  for (const text of texts) {
-    for (const line of text.split(/\r?\n/)) {
-      const t = line.trim().replace(/^\*\*|\*\*$/g, "");
-      if (/^APPROVE\b/.test(t)) found = { verdict: "approve" };
-      const m = /^REJECT:\s*(.+)$/.exec(t);
-      if (m) found = { verdict: "reject", reason: m[1]!.trim() };
-    }
+  for (const t of answerLines(output)) {
+    if (/^APPROVE\b/.test(t)) found = { verdict: "approve" };
+    const m = /^REJECT:\s*(.+)$/.exec(t);
+    if (m) found = { verdict: "reject", reason: m[1]!.trim() };
   }
   return found;
 }

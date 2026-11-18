@@ -15,7 +15,7 @@ function setup(extra: Record<string, string> = {}) {
   const cfgPath = join(root, ".devflow", "config.json");
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   cfg.openspec = { cli: "off" };
-  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE"] } };
+  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE", "FAKE_PLAN_CONFLICT", "FAKE_VERDICT_IN_ANSWER"] } };
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   sh(root, "git", ["add", "-A"]);
   sh(root, "git", ["commit", "-q", "-m", "config"]);
@@ -131,6 +131,42 @@ test("after a gate failure the next implement prompt carries the gate and its lo
   write(root, "tests/broken.test.js", "\n");
   assert.equal(lines(devflow("run", "t4g", "--once").out)[0].outcome, "pass");
   assert.equal(existsSync(join(root, ".devflow", "runs", "t4g", "gates-failure.md")), false);
+});
+
+test("implement can send a wrong plan back to design as a new revision; the second time a human decides", () => {
+  const { devflow, state, lines, prompts } = setup({ FAKE_PLAN_CONFLICT: "decision 4 keeps line breaks, the finding needs folding" });
+  devflow("start", "tpc", "Add mul");
+  devflow("run", "tpc");
+  devflow("approve", "tpc");
+  const r = lines(devflow("run", "tpc", "--once").out)[0];
+  assert.deepEqual([r.stage, r.outcome, r.reason], ["implement", "plan_conflict", "decision 4 keeps line breaks, the finding needs folding"]);
+  const s = state("tpc");
+  assert.deepEqual([s.status, s.planRevision, s.planDigest], ["EXPLORED", 2, undefined]);
+  assert.doesNotMatch(implementPrompts(prompts)[0]!, /^PLAN CONFLICT:/m);
+  const d = lines(devflow("run", "tpc", "--once").out)[0];
+  assert.deepEqual([d.stage, d.outcome], ["design", "ok"]);
+  const designs = readdirSync(prompts).filter((f) => f.startsWith("DESIGN")).sort();
+  assert.match(readFileSync(join(prompts, designs.at(-1)!), "utf8"), /implementer: decision 4 keeps line breaks/);
+  assert.equal(state("tpc").status, "DESIGNED");
+  devflow("approve", "tpc");
+  devflow("run", "tpc", "--once");
+  assert.deepEqual([state("tpc").status, state("tpc").humanReason], ["HUMAN", "plan_conflicts_limit"]);
+});
+
+test("a verdict given in claude's answer instead of the file is still read", () => {
+  const { root, devflow, state, lines } = setup({ FAKE_VERDICT_IN_ANSWER: "1" });
+  const cfgPath = join(root, ".devflow", "config.json");
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+  cfg.roles.verify = { runner: "claude", model: "sonnet" };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  sh(root, "git", ["commit", "-qam", "verify on claude"]);
+  devflow("start", "tva", "Add mul");
+  devflow("run", "tva");
+  devflow("approve", "tva");
+  const out = lines(devflow("run", "tva").out);
+  assert.deepEqual(out.slice(0, 3).map((x) => `${x.stage}:${x.outcome}`), ["implement:ok", "gates:pass", "verify:pass"]);
+  assert.equal(state("tva").status, "DONE");
+  assert.match(readFileSync(join(root, ".devflow", "runs", "tva", "verdict.md"), "utf8"), /^VERDICT: PASS\n\ndesign-visible: no/);
 });
 
 test("an edit between gates and verify sends the task back to gates", () => {

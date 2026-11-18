@@ -41,6 +41,9 @@ const HistoryEntrySchema = z.object({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
+/** Implement may send a plan back to design this many times before a human decides. */
+export const PLAN_CONFLICT_LIMIT = 2;
+
 export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
 
 export const TaskStateSchema = z.strictObject({
@@ -83,6 +86,7 @@ export type Event =
   | { kind: "approve"; planDigest?: string; zone?: string[]; revision?: number; by?: "model" }
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
   | { kind: "reject"; reason: string; revision?: number; by?: "model" }
+  | { kind: "plan_conflict"; reason: string }
   | { kind: "delegate"; to: "human" | "model" }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
@@ -350,6 +354,27 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
       t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...(event.by ? { results: "by model" } : {}) });
+      return t;
+    }
+
+    case "plan_conflict": {
+      // The implementer found the approved plan itself wrong: it goes back to design as a new revision,
+      // and the new revision needs approval again. Twice in a row means the plan does not converge.
+      if (task.status !== "PLAN_APPROVED" || task.tier === "small") {
+        throw new DevflowError("no_approved_plan", `Task ${task.id} has no approved plan to send back (status: ${task.status}).`);
+      }
+      const conflicts = task.history.filter((h) => h.kind === "reject" && h.results === "by implement").length;
+      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
+      if (conflicts >= PLAN_CONFLICT_LIMIT - 1) {
+        toHuman("plan_conflicts_limit");
+        return t;
+      }
+      t.status = "EXPLORED";
+      delete t.planDigest;
+      delete t.gatesSnapshot;
+      t.planRevision = (t.planRevision ?? 1) + 1;
+      t.attempts.implement = 0;
+      t.attempts.verify = 0;
       return t;
     }
 
