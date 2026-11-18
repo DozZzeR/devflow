@@ -41,6 +41,10 @@
     ],
     "setup": "npm ci --no-audit --no-fund"
   },
+  "build": {
+    "generate": "npm run build:plugins",
+    "outputs": ["plugins/**"]
+  },
   "openspec": {
     "cli": "auto"
   },

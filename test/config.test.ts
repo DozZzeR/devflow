@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, findProjectRoot, initProject, loadConfig, parseConfig } from "../src/config.js";
 import { DevflowError } from "../src/errors.js";
 import { tempDir } from "./helpers.js";
@@ -22,6 +23,40 @@ function problems(raw: unknown): string[] {
 test("valid configuration loads", () => {
   const c = parseConfig(base());
   assert.equal(c.roles.verify.runner, "codex");
+});
+
+test("build settings are optional, strict, and validate output globs", () => {
+  const generate = "npm run build:plugins";
+  const build = { generate, outputs: ["plugins/**"] };
+  assert.deepEqual(parseConfig({ ...base(), build }).build, build);
+  assert.deepEqual(parseConfig({ ...base(), build: { generate } }).build, { generate });
+  assert.deepEqual(parseConfig({ ...base(), build: {} }).build, {});
+  assert.equal(parseConfig(base()).build, undefined);
+  const allowed = { generate, outputs: ["./plugins/**", "././plugins/**", "src/.devflow-notes/**"] };
+  assert.deepEqual(parseConfig({ ...base(), build: allowed }).build, allowed);
+  for (const glob of [
+    "", "./", "../x/**", "a/../b", "/abs/**", ".//abs/**", "C:/x", "./C:/x", "a\\b",
+    ".devflow", ".devflow/**", ".devflow-cache/**", ".devflow*/**", "./.devflow/runs/**", "././.devflow-x",
+  ]) {
+    assert.ok(problems({ ...base(), build: { generate, outputs: [glob] } }).some((p) => p.startsWith("build.outputs.0:")), glob);
+  }
+  for (const outputs of [build.outputs, []]) {
+    assert.ok(problems({ ...base(), build: { outputs } }).some((p) => p.startsWith("build.generate:")));
+  }
+  assert.ok(problems({ ...base(), build: { generate: "" } }).some((p) => p.startsWith("build.generate:")));
+  assert.ok(problems({ ...base(), build: { watch: true } }).includes("build.watch: unknown field"));
+});
+
+test("repository config regenerates plugin bundles", (t) => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  if (!existsSync(join(root, ".git")) && !existsSync(join(root, ".devflow"))) {
+    t.skip("repository metadata is omitted from the verify copy");
+    return;
+  }
+  assert.deepEqual(loadConfig(root).build, {
+    generate: "npm run build:plugins",
+    outputs: ["plugins/**"],
+  });
 });
 
 test("language defaults to en and accepts an explicit tag", () => {

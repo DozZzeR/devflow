@@ -4,7 +4,7 @@
  */
 export function globToRegExp(glob: string): RegExp {
   let re = "";
-  const g = glob.replace(/\\/g, "/").replace(/^\.\//, "");
+  const g = glob.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
   for (let i = 0; i < g.length; i++) {
     const c = g[i]!;
     if (c === "*") {

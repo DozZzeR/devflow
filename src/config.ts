@@ -23,6 +23,12 @@ export const RoleSchema = z.discriminatedUnion("runner", [
 
 const positiveInt = z.number().int().positive();
 
+function outputGlobProblem(glob: string): boolean {
+  const path = glob.replace(/^(?:\.\/)+/, "");
+  return !path || path.startsWith("/") || /^[A-Za-z]:/.test(path)
+    || path.includes("\\") || path.split("/").includes("..") || path.startsWith(DEVFLOW_DIR);
+}
+
 export const ConfigSchema = z.strictObject({
   language: z.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "expected a BCP 47 language tag").default("en"),
   roles: z.strictObject({
@@ -52,6 +58,17 @@ export const ConfigSchema = z.strictObject({
     red_exit_codes: z.array(z.number().int()).min(1).optional(),
     timeout_seconds: positiveInt.max(86_400).default(1800),
   }),
+  build: z.strictObject({
+    generate: z.string().min(1).optional(),
+    outputs: z.array(z.string().refine(
+      (glob) => !outputGlobProblem(glob),
+      "expected a non-empty project-relative output glob without a .devflow prefix, backslashes, or parent segments",
+    )).optional(),
+  }).superRefine(({ generate, outputs }, ctx) => {
+    if (!generate && outputs !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["generate"], message: "required when build.outputs is supplied" });
+    }
+  }).optional(),
   openspec: z.strictObject({ cli: z.enum(["auto", "on", "off"]) }).optional(),
   logs: z.strictObject({ keep: positiveInt }).optional(),
   runners: z

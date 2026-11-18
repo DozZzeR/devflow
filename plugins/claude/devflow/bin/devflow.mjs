@@ -20478,6 +20478,10 @@ var init_errors3 = __esm({
 // src/config.ts
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+function outputGlobProblem(glob) {
+  const path = glob.replace(/^(?:\.\/)+/, "");
+  return !path || path.startsWith("/") || /^[A-Za-z]:/.test(path) || path.includes("\\") || path.split("/").includes("..") || path.startsWith(DEVFLOW_DIR);
+}
 function formatIssues(error62) {
   const lines = [];
   for (const issue2 of error62.issues) {
@@ -20634,6 +20638,17 @@ var init_config = __esm({
         red_exit_codes: external_exports.array(external_exports.number().int()).min(1).optional(),
         timeout_seconds: positiveInt.max(86400).default(1800)
       }),
+      build: external_exports.strictObject({
+        generate: external_exports.string().min(1).optional(),
+        outputs: external_exports.array(external_exports.string().refine(
+          (glob) => !outputGlobProblem(glob),
+          "expected a non-empty project-relative output glob without a .devflow prefix, backslashes, or parent segments"
+        )).optional()
+      }).superRefine(({ generate, outputs }, ctx) => {
+        if (!generate && outputs !== void 0) {
+          ctx.addIssue({ code: "custom", path: ["generate"], message: "required when build.outputs is supplied" });
+        }
+      }).optional(),
       openspec: external_exports.strictObject({ cli: external_exports.enum(["auto", "on", "off"]) }).optional(),
       logs: external_exports.strictObject({ keep: positiveInt }).optional(),
       runners: external_exports.strictObject({
@@ -39559,7 +39574,7 @@ import { dirname as dirname4, isAbsolute as isAbsolute3, join as join8, relative
 // src/glob.ts
 function globToRegExp(glob) {
   let re = "";
-  const g = glob.replace(/\\/g, "/").replace(/^\.\//, "");
+  const g = glob.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
   for (let i = 0; i < g.length; i++) {
     const c = g[i];
     if (c === "*") {
@@ -39848,7 +39863,8 @@ function zoneGate(ctx) {
     return blocked("zone", "no_zone", started);
   }
   const changes = changeSet(ctx.root, ctx.task.base);
-  const outside2 = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), zone);
+  const effectiveZone = [...zone, ...ctx.config.build?.outputs ?? []];
+  const outside2 = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), effectiveZone);
   return outside2.length ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside: outside2 }, durationMs: Date.now() - started } : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
 }
 async function runCommand(ctx, command, cwd, label) {
@@ -39873,6 +39889,10 @@ async function runCommand(ctx, command, cwd, label) {
   } finally {
     log.close();
   }
+}
+async function runGenerate(ctx, cwd, label) {
+  const command = ctx.config.build?.generate;
+  if (command) return runCommand(ctx, command, cwd, label);
 }
 var runError = (r) => r.timedOut || r.exitCode === null;
 async function testsGate(ctx) {
@@ -39957,6 +39977,12 @@ async function rollbackGate(ctx) {
       logs.push(r.log);
       return r;
     };
+    const regenerate = async () => {
+      const r = await runGenerate(ctx, wt.projectDir, "gate_rollback_generate");
+      if (!r) return;
+      logs.push(r.log);
+      if (r.exitCode !== 0 || r.timedOut) return blocked("rollback", "generate_failed", started, { logs });
+    };
     result = await (async () => {
       if (setup) {
         const s = await step(setup, "gate_rollback_setup");
@@ -39966,6 +39992,8 @@ async function rollbackGate(ctx) {
       if (runError(baseline)) return blocked("rollback", "test_run_error", started, { logs });
       if (baseline.exitCode !== 0) return blocked("rollback", "baseline_failed", started, { logs });
       applyPaths(ctx.root, wt.projectDir, tests);
+      const testsGenerateFailure = await regenerate();
+      if (testsGenerateFailure) return testsGenerateFailure;
       const red = await step(ctx.config.test.command, "gate_rollback_tests_only");
       if (runError(red)) return blocked("rollback", "test_run_error", started, { logs });
       if (red.exitCode === 0) {
@@ -39977,6 +40005,8 @@ async function rollbackGate(ctx) {
         const s2 = await step(setup, "gate_rollback_setup");
         if (s2.exitCode !== 0) return blocked("rollback", "setup_failed", started, { logs });
       }
+      const fullGenerateFailure = await regenerate();
+      if (fullGenerateFailure) return fullGenerateFailure;
       const green = await step(ctx.config.test.command, "gate_rollback_full");
       if (runError(green)) return blocked("rollback", "test_run_error", started, { logs });
       if (green.exitCode !== 0) {
@@ -40576,6 +40606,7 @@ async function runGatesStage(root, task, workingConfig, io) {
   return { task: recorded, results, skipped, configSource: source };
 }
 var GATES_FAILURE = "gates-failure.md";
+var GENERATE_FAILURE = "generate-failure.md";
 var LOG_TAIL_LINES = 80;
 function tail2(text2, lines) {
   const all = text2.split(/\r?\n/);
@@ -40599,13 +40630,25 @@ ${tail2(read(files[files.length - 1]), LOG_TAIL_LINES)}` : "";
   });
   writeFileSync7(path, parts.join("\n\n") + "\n");
 }
+function saveGenerateFailure(root, id, command, exitCode, timedOut, log) {
+  const outcome = timedOut ? "timed out" : `exit ${exitCode}`;
+  writeFileSync7(join16(runsDir2(root, id), GENERATE_FAILURE), [
+    "Generate step: fail (generate_failed)",
+    `$ ${command}`,
+    outcome,
+    "",
+    "Log tail:",
+    tail2(read(log), LOG_TAIL_LINES),
+    ""
+  ].join("\n"));
+}
 function reworkFeedback(root, task) {
   const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
   const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
   const dir = runsDir2(root, task.id);
   const verdict = lastVerify?.outcome === "rework" ? read(join16(dir, "verdict.md")) : "";
   const gates = lastGates && lastGates.outcome !== "pass" ? read(join16(dir, GATES_FAILURE)) : "";
-  return block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates);
+  return block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates) + block("Generate step failure on the previous attempt (make the generate command succeed)", read(join16(dir, GENERATE_FAILURE)));
 }
 function role(stage, task, config2) {
   const r = roleFor(stage, task.tier, config2);
@@ -40730,19 +40773,41 @@ async function runNextStage(root, workingConfig, id, io) {
       const tasksMd = `openspec/changes/${id}/tasks.md`;
       const zone = task.zone?.length ? task.zone : small ? ["**"] : [];
       if (!zone.length) throw new DevflowError("no_zone", `Task ${id} has no impact zone; approve a design or set one with "devflow zone".`);
-      const ctx = (small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z2) => `- ${z2}`).join("\n"))) + reworkFeedback(root, task);
+      const trusted = gateConfig(root, task.base, config2).config;
+      const generate = trusted.build?.generate;
+      const generatedPaths = (trusted.build?.outputs ?? []).map((glob) => `- ${glob} (generated by \`${generate}\`; do not edit by hand)`);
+      const impact = [...zone.map((glob) => `- ${glob}`), ...generatedPaths].join("\n");
+      const ctx = (small ? "" : changeContext(root, id, () => true)) + (!small || generatedPaths.length ? block("Impact zone", impact) : "") + reworkFeedback(root, task);
+      const generateFailure = join16(runsDir2(root, id), GENERATE_FAILURE);
+      rmSync6(generateFailure, { force: true });
       const write = small ? zone : [...zone, tasksMd];
-      const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config2.test.command] });
+      const bash = [config2.test.command];
+      if (generate) bash.push(generate);
+      const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash });
       const answer = r.ok && r.log ? read(r.log) : "";
       const blocked2 = answer ? parseBlocked(answer) : void 0;
       if (blocked2) {
         task = record2(root, task, { kind: "blocked", stage: "implement", reason: blocked2 }, config2, io);
         return report("blocked", task, blocked2, r);
       }
-      const conflict = answer && !small ? parsePlanConflict(answer) : void 0;
+      const conflict = answer && (!small || generate) ? parsePlanConflict(answer) : void 0;
       if (conflict) {
+        if (small) {
+          task = record2(root, task, { kind: "complete", stage, outcome: "fail" }, config2, io);
+          return report("fail", task, "plan_conflict", r);
+        }
         task = record2(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config2, io);
         return report("plan_conflict", task, conflict, r);
+      }
+      if (r.ok && generate) {
+        const generated = await runGenerate({ root, task, config: trusted, parentEnv: io.env }, root, "generate");
+        if (generated && (generated.exitCode !== 0 || generated.timedOut)) {
+          const { exitCode, timedOut, log } = generated;
+          saveGenerateFailure(root, id, generate, exitCode, timedOut, log);
+          task = record2(root, task, { kind: "complete", stage, outcome: "fail" }, config2, io);
+          return report("fail", task, "generate_failed", { exitCode, timedOut, log });
+        }
+        if (generated) rmSync6(generateFailure, { force: true });
       }
       task = record2(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config2, io);
       return report(r.ok ? "ok" : "fail", task, r.ok ? void 0 : "run_failed", r);
@@ -40790,6 +40855,10 @@ async function runVerify(root, task, workingConfig, io, report) {
     if (config2.test.setup) {
       const s = await runCommand({ root, task, config: config2, parentEnv: io.env }, config2.test.setup, wt.projectDir, "verify_setup");
       if (s.exitCode !== 0) failure2 = "verify_setup_failed";
+    }
+    if (!failure2) {
+      const generated = await runGenerate({ root, task, config: config2, parentEnv: io.env }, wt.projectDir, "verify_generate");
+      if (generated && (generated.exitCode !== 0 || generated.timedOut)) failure2 = "verify_generate_failed";
     }
     if (!failure2) {
       r = await runModel(root, task, config2, io, "verify", "verify", ctx, [".devflow-verdict.md"], [".devflow-verdict.md"], {

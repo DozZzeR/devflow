@@ -77,7 +77,8 @@ export function zoneGate(ctx: GateContext): GateResult {
     return blocked("zone", "no_zone", started);
   }
   const changes = changeSet(ctx.root, ctx.task.base!);
-  const outside = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), zone);
+  const effectiveZone = [...zone, ...(ctx.config.build?.outputs ?? [])];
+  const outside = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), effectiveZone);
   return outside.length
     ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside }, durationMs: Date.now() - started }
     : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
@@ -108,6 +109,11 @@ export async function runCommand(ctx: GateContext, command: string, cwd: string,
   } finally {
     log.close();
   }
+}
+
+export async function runGenerate(ctx: GateContext, cwd: string, label: string): Promise<TestRun | undefined> {
+  const command = ctx.config.build?.generate;
+  if (command) return runCommand(ctx, command, cwd, label);
 }
 
 const runError = (r: TestRun) => r.timedOut || r.exitCode === null;
@@ -204,6 +210,13 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
       return r;
     };
 
+    const regenerate = async () => {
+      const r = await runGenerate(ctx, wt!.projectDir, "gate_rollback_generate");
+      if (!r) return;
+      logs.push(r.log);
+      if (r.exitCode !== 0 || r.timedOut) return blocked("rollback", "generate_failed", started, { logs });
+    };
+
     result = await (async (): Promise<GateResult> => {
       if (setup) {
         const s = await step(setup, "gate_rollback_setup");
@@ -214,6 +227,8 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
       if (baseline.exitCode !== 0) return blocked("rollback", "baseline_failed", started, { logs });
 
       applyPaths(ctx.root, wt!.projectDir, tests);
+      const testsGenerateFailure = await regenerate();
+      if (testsGenerateFailure) return testsGenerateFailure;
       const red = await step(ctx.config.test.command, "gate_rollback_tests_only");
       if (runError(red)) return blocked("rollback", "test_run_error", started, { logs });
       if (red.exitCode === 0) {
@@ -226,6 +241,8 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
         const s2 = await step(setup, "gate_rollback_setup");
         if (s2.exitCode !== 0) return blocked("rollback", "setup_failed", started, { logs });
       }
+      const fullGenerateFailure = await regenerate();
+      if (fullGenerateFailure) return fullGenerateFailure;
       const green = await step(ctx.config.test.command, "gate_rollback_full");
       if (runError(green)) return blocked("rollback", "test_run_error", started, { logs });
       if (green.exitCode !== 0) {

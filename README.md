@@ -57,7 +57,7 @@ Gates check a task's changes against its base commit, with no model involved. Ea
 - **tests**: `test.command` passes in the working tree.
 - **rollback**: in a temporary git worktree at the base, the suite passes; with only the changed test files (`test.paths`) it fails; with the whole change it passes again. Tests that pass without the production change fail the gate as `tests_check_nothing`. Your working tree is never touched.
 
-Settings: `test.setup` (run in the worktree before the baseline and again if `test.setup_inputs` files changed, e.g. `npm ci`), `test.red_exit_codes` (e.g. `[1]` for pytest, so other codes become `blocked`), `test.timeout_seconds`. The test command runs in your shell with your environment: these are your own tests and no model sees that environment.
+Settings: `test.setup` (run in the worktree before the baseline and again if `test.setup_inputs` files changed, e.g. `npm ci`), `test.red_exit_codes` (e.g. `[1]` for pytest, so other codes become `blocked`), `test.timeout_seconds`. The test command runs in your shell with your environment: these are your own tests and no model sees that environment. The optional `build.generate` command runs after a successful implement and in rollback and verify worktrees after changes are applied. `build.outputs` requires `build.generate` and extends an existing impact zone. Output globs may not start with `.devflow` after stripping leading `./` segments. A generate failure after implement sends the command's log tail to the next implement attempt.
 
 Repeated gate failures or a zone violation escalate the task by one tier (complex goes to a human); `blocked` goes to a human without escalation.
 

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { initProject, loadConfig, type Config } from "../src/config.js";
 import { rollbackGate, runAllGates, testsGate, zoneGate } from "../src/gates.js";
 import { parseImpactZone } from "../src/zone.js";
@@ -38,6 +39,29 @@ test("zone gate: pass inside, fail lists outsiders, blocked without zone on medi
   assert.deepEqual([small.outcome, small.warnings], ["pass", ["no_zone"]]);
 });
 
+test("generated outputs join an existing impact zone", () => {
+  const { root, base } = gitProject();
+  write(root, "src/a.ts", "export {};\n");
+  write(root, "plugins/x/index.js", "generated\n");
+  const zone = ["src/**"];
+  const withOutput = (output: string) => (c: Config) => {
+    c.build = { generate: "node gen.mjs", outputs: [output] };
+  };
+  const config = withOutput("plugins/**");
+  for (const output of ["plugins/**", "./plugins/**", "././plugins/**"]) {
+    const result = zoneGate(ctx(root, base, { zone, config: withOutput(output) }));
+    assert.equal(result.outcome, "pass", JSON.stringify({ output, result }));
+    assert.deepEqual(result.details, { changed: 2 });
+  }
+  assert.equal(zoneGate(ctx(root, base, { zone: ["././src/**"], config })).outcome, "pass");
+  assert.deepEqual(zone, ["src/**"]);
+  const withoutBuild = zoneGate(ctx(root, base, { zone }));
+  assert.equal(withoutBuild.outcome, "fail");
+  assert.deepEqual(withoutBuild.details, { outside: ["plugins/x/index.js"] });
+  const noZone = zoneGate(ctx(root, base, { config }));
+  assert.deepEqual([noZone.outcome, noZone.reason], ["blocked", "no_zone"]);
+});
+
 test("gates are blocked without git or without a base", () => {
   const { root } = gitProject();
   const noBase = zoneGate(ctx(root, undefined, { zone: ["**"] }));
@@ -57,6 +81,54 @@ test("rollback: real regression test passes and leaves the working tree untouche
   assert.equal(r.outcome, "pass", JSON.stringify(r));
   assert.equal(sh(root, "git", ["status", "--porcelain"]), before);
   assert.equal(sh(root, "git", ["worktree", "list"]).trim().split("\n").length, 1);
+});
+
+test("rollback regenerates only in the worktree and cleans up after failure", async () => {
+  const { root } = gitProject();
+  write(root, "src/value.txt", "old");
+  write(root, "out/bundle.txt", "old");
+  write(root, "gen.mjs", `
+    import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+    const testFile = 'tests/bundle.test.js';
+    if (!existsSync(testFile) || !readFileSync(testFile, 'utf8').includes('// gen-marker')) {
+      process.exit(1);
+    }
+    copyFileSync('src/value.txt', 'out/bundle.txt');
+  `);
+  sh(root, "git", ["add", "-A"]);
+  sh(root, "git", ["commit", "-qm", "generator fixture"]);
+  const base = sh(root, "git", ["rev-parse", "HEAD"]).trim();
+  write(root, "src/value.txt", "new");
+  write(root, "tests/bundle.test.js", `
+    // gen-marker
+    const { readFileSync } = require('node:fs');
+    const assert = require('node:assert/strict');
+    const value = readFileSync('src/value.txt', 'utf8');
+    assert.equal(value, 'new');
+    assert.equal(readFileSync('out/bundle.txt', 'utf8'), value);
+  `);
+  const status = sh(root, "git", ["status", "--porcelain"]);
+  const worktrees = sh(root, "git", ["worktree", "list", "--porcelain"]);
+  const withGenerate = (generate: string) => ctx(root, base, { config: (c) => { c.build = { generate, outputs: ["out/**"] }; } });
+
+  const generated = await rollbackGate(withGenerate("node gen.mjs"));
+  assert.equal(generated.outcome, "pass", JSON.stringify(generated));
+  const { logs } = generated.details as { logs: string[] };
+  assert.match(logs[1]!, /gate_rollback_generate/);
+  assert.match(logs[3]!, /gate_rollback_generate/);
+  for (const log of [logs[1]!, logs[3]!]) {
+    const cwd = readFileSync(log, "utf8").match(/^# cwd: (.+)$/m)?.[1];
+    assert.ok(cwd);
+    assert.notEqual(cwd, root);
+  }
+  const stale = await rollbackGate(ctx(root, base));
+  assert.deepEqual([stale.outcome, stale.reason], ["fail", "tests_fail_with_change"]);
+  const failed = await rollbackGate(withGenerate('node -e "process.exit(1)"'));
+  assert.deepEqual([failed.outcome, failed.reason], ["blocked", "generate_failed"]);
+  assert.match((failed.details as { logs: string[] }).logs.at(-1)!, /gate_rollback_generate/);
+  assert.equal(readFileSync(join(root, "out", "bundle.txt"), "utf8"), "old");
+  assert.equal(sh(root, "git", ["status", "--porcelain"]), status);
+  assert.equal(sh(root, "git", ["worktree", "list", "--porcelain"]), worktrees);
 });
 
 test("rollback: a test that passes without the change checks nothing", async () => {
