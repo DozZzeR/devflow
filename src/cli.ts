@@ -14,6 +14,8 @@ import { checkDesign } from "./artifacts.js";
 import { adoptLock, acquireLock, latestRunLog, newRunId, readLock, releaseLock, startDetached } from "./background.js";
 import { changeFiles, planDigest } from "./snapshot.js";
 import { runGatesStage, runLoop } from "./stages.js";
+import { finishJob } from "./jobs.js";
+import { applyProposal, candidates, proposeLayout, setRole, showRoles } from "./roles.js";
 import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
@@ -36,6 +38,9 @@ Usage:
   devflow base <id> <commit>
   devflow gate <id> [zone|tests|rollback|all]
   devflow run <id> [--once] [--detach] [--timeout <seconds>]
+  devflow delegate-approval <id> --to model|human
+  devflow roles [--json] | roles propose [--probe] [--apply] | roles set <role> <runner> <model> [--command "<template>"]
+  devflow mcp
   devflow log <id> [--follow]
 
 Global: --json (machine-readable errors), --help, --version`;
@@ -46,9 +51,9 @@ interface Parsed {
   lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "revision", "to", "command"]);
 const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
-const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow"]);
+const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow", "apply"]);
 
 export function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
@@ -137,6 +142,17 @@ function summary(task: TaskState, config: Config) {
 }
 
 export async function run(argv: string[], io: Io): Promise<number> {
+  if (argv[0] === "__job") {
+    // Internal: run a command as a background job and record its exit code.
+    const [, jobId, ...rest] = argv;
+    const code = await run(rest, io);
+    try {
+      finishJob(findProjectRoot(io.cwd), jobId ?? "", code);
+    } catch {
+      /* the job record is best effort */
+    }
+    return code;
+  }
   let json = argv.includes("--json");
   try {
     const p = parseArgs(argv);
@@ -209,7 +225,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
       case "approve": {
         arity(args, 1, 1, "approve <id> [--resume]");
         const rejectReason = str(p, "reject");
-        let event: Event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason } : { kind: "approve" };
+        const revisionArg = str(p, "revision");
+        const revision = revisionArg === undefined ? undefined : Number(revisionArg);
+        if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) throw new UsageError("--revision must be a positive integer");
+        const rev = revision === undefined ? {} : { revision };
+        let event: Event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason, ...rev } : { kind: "approve", ...rev };
         if (!p.flags.has("resume") && !rejectReason) {
           const { root, config } = project(io);
           const id = args[0]!;
@@ -223,7 +243,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           if (changeFiles(root, id).length) {
             const check = await checkDesign(root, id, config);
             if (!check.ok) throw new DevflowError("design_invalid", `Plan for ${id} does not pass the design checks: ${check.reason}`, check.details);
-            event = { kind: "approve", planDigest: planDigest(root, id, loadTask(root, id).planRevision ?? 1), zone: check.zone! };
+            event = { kind: "approve", planDigest: planDigest(root, id, loadTask(root, id).planRevision ?? 1), zone: check.zone!, ...rev };
           }
         }
         const t = apply(io, args[0]!, event);
@@ -427,6 +447,44 @@ export async function run(argv: string[], io: Io): Promise<number> {
           }
           dump();
         }
+        return 0;
+      }
+      case "delegate-approval": {
+        arity(args, 1, 1, "delegate-approval <id> --to model|human");
+        const to = str(p, "to");
+        if (to !== "model" && to !== "human") throw new UsageError("--to must be model or human");
+        const t = apply(io, args[0]!, { kind: "delegate", to });
+        io.out(JSON.stringify({ id: t.id, approval: t.approval }));
+        return 0;
+      }
+      case "roles": {
+        const { root, config } = project(io);
+        const sub = args[0];
+        if (!sub) {
+          const roles = showRoles(config);
+          if (json) io.out(JSON.stringify(roles));
+          else for (const [name, r] of Object.entries(roles)) io.out(`${name.padEnd(15)} ${r.runner}/${r.model}`);
+          return 0;
+        }
+        if (sub === "propose") {
+          arity(args, 1, 1, "roles propose [--probe] [--apply]");
+          const proposal = proposeLayout(await candidates(root, config, { probe: p.flags.has("probe"), env: io.env }));
+          if (p.flags.has("apply")) applyProposal(root, proposal);
+          io.out(JSON.stringify({ ...proposal, applied: p.flags.has("apply") }));
+          return 0;
+        }
+        if (sub === "set") {
+          arity(args, 4, 4, 'roles set <role> <runner> <model> [--command "<template>"]');
+          const updated = setRole(root, args[1]!, args[2]!, args[3]!, str(p, "command"));
+          io.out(JSON.stringify(showRoles(updated)));
+          return 0;
+        }
+        throw new UsageError(`Unknown roles subcommand "${sub}"`);
+      }
+      case "mcp": {
+        arity(args, 0, 0, "mcp");
+        const { serveMcp } = await import("./mcp.js");
+        await serveMcp({ cwd: str(p, "dir") ?? io.cwd, env: io.env, now: io.now });
         return 0;
       }
       case "hook": {

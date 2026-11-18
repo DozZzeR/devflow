@@ -43,7 +43,7 @@ export function headCommit(root: string): string | undefined {
   return r.code === 0 ? r.stdout.trim() : undefined;
 }
 
-const EXCLUDED = [/^\.devflow\/runs(\/|$)/, /^\.devflow\/logs(\/|$)/];
+const EXCLUDED = [/^\.devflow\/runs(\/|$)/, /^\.devflow\/logs(\/|$)/, /^\.devflow\/jobs(\/|$)/];
 
 /** Project-relative paths changed since `base`: tracked changes (both rename paths) plus untracked, non-ignored files. */
 export function changeSet(root: string, base: string): string[] {

@@ -40,7 +40,10 @@ test("medium task runs explore → design → approval → implement → gates �
 
 test("complex design uses design_complex role, falling back to design", () => {
   const t = play(task("complex"), cfg, ok("explore"));
-  assert.equal(nextStage(t, cfg).role?.model, "fable");
+  const withFable = config();
+  withFable.roles.design_complex = { runner: "claude", model: "fable" };
+  assert.equal(nextStage(t, withFable).role?.model, "fable");
+  assert.equal(nextStage(t, cfg).role?.model, "opus"); // default preset: no Fable
   const noComplex = config();
   delete noComplex.roles.design_complex;
   assert.equal(nextStage(t, noComplex).role?.model, "opus");
@@ -119,7 +122,7 @@ test("medium escalates to complex and re-runs design", () => {
   t = play(t, cfg, { kind: "escalate", reason: "rework_twice" });
   assert.equal(t.tier, "complex");
   assert.equal(nextStage(t, cfg).stage, "design");
-  assert.equal(nextStage(t, cfg).role?.model, "fable");
+  assert.equal(nextStage(t, cfg).role?.model, "opus");
 });
 
 test("complex cannot escalate; done task cannot change tier", () => {

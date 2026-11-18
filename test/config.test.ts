@@ -63,7 +63,7 @@ test("init creates config and .gitignore and nothing else", () => {
   const r = initProject(dir);
   assert.deepEqual([r.configCreated, r.gitignore], [true, "created"]);
   assert.deepEqual(readdirSync(join(dir, ".devflow")).sort(), [".gitignore", "config.json"]);
-  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\nlogs/\n");
+  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\nlogs/\njobs/\n");
   assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "node_modules/\n");
   assert.equal(loadConfig(dir).language, "en");
 });
@@ -74,7 +74,7 @@ test("init upgrades an old .devflow/.gitignore without touching existing lines",
   writeFileSync(join(dir, ".devflow", ".gitignore"), "runs/\ncustom");
   const r = initProject(dir);
   assert.equal(r.gitignore, "updated");
-  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\ncustom\nlogs/\n");
+  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\ncustom\nlogs/\njobs/\n");
 });
 
 test("init picks runners from detected CLIs or an override", () => {

@@ -13,6 +13,7 @@ export interface CliStatus {
 export interface DoctorReport {
   clis: CliStatus[];
   missing: { role: string; runner: string }[];
+  node: string;
   probes?: { runner: string; model: string; ok: boolean; durationMs: number; log: string; detail?: string }[];
 }
 
@@ -73,7 +74,7 @@ export async function doctor(root: string, config: Config, probe: boolean, paren
   const missing = roles
     .filter(([, r]) => r.runner !== "command" && !installed.has(r.runner))
     .map(([role, r]) => ({ role, runner: r.runner }));
-  const report: DoctorReport = { clis, missing };
+  const report: DoctorReport = { clis, missing, node: process.version };
   if (!probe) return report;
 
   const pairs = new Map<string, [string, Role]>();

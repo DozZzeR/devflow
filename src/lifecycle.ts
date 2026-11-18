@@ -30,7 +30,7 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
 
 const HistoryEntrySchema = z.object({
   at: z.string(),
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review"]),
   stage: z.enum(STAGES).optional(),
   gate: z.string().optional(),
   results: z.string().optional(),
@@ -60,6 +60,7 @@ export const TaskStateSchema = z.strictObject({
   lastVerdict: z.strictObject({ outcome: z.string(), at: z.string(), snapshot: z.string().optional() }).optional(),
   planDigest: z.string().optional(),
   planRevision: z.number().int().positive().optional(),
+  approval: z.enum(["human", "model"]).optional(),
   gatesSnapshot: z.string().optional(),
   base: z.string().optional(),
   zone: z.array(z.string()).optional(),
@@ -79,9 +80,10 @@ export type GateOutcome = "pass" | "fail" | "blocked";
 export type Event =
   | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string; byRun?: boolean }
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
-  | { kind: "approve"; planDigest?: string; zone?: string[] }
+  | { kind: "approve"; planDigest?: string; zone?: string[]; revision?: number; by?: "model" }
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
-  | { kind: "reject"; reason: string }
+  | { kind: "reject"; reason: string; revision?: number; by?: "model" }
+  | { kind: "delegate"; to: "human" | "model" }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
   | { kind: "escalate"; reason: string };
@@ -331,14 +333,23 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       return t;
     }
 
+    case "delegate": {
+      t.approval = event.to;
+      t.history.push({ at: now, kind: "delegate", to: event.to });
+      return t;
+    }
+
     case "reject": {
       if (task.status !== "DESIGNED") {
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
       }
+      if (event.revision !== undefined && event.revision !== (task.planRevision ?? 1)) {
+        throw new DevflowError("plan_moved", `Revision ${event.revision} is not the current plan (revision ${task.planRevision ?? 1}).`);
+      }
       t.status = "EXPLORED";
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
-      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}` });
+      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...(event.by ? { results: "by model" } : {}) });
       return t;
     }
 
@@ -346,10 +357,13 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       if (task.status !== "DESIGNED") {
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
       }
+      if (event.revision !== undefined && event.revision !== (task.planRevision ?? 1)) {
+        throw new DevflowError("plan_moved", `Revision ${event.revision} is not the current plan (revision ${task.planRevision ?? 1}).`);
+      }
       t.status = "PLAN_APPROVED";
       if (event.planDigest) t.planDigest = event.planDigest;
       if (event.zone) t.zone = event.zone;
-      t.history.push({ at: now, kind: "approve" });
+      t.history.push({ at: now, kind: "approve", ...(event.by ? { results: "by model" } : {}) });
       return t;
     }
 

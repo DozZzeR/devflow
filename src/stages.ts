@@ -11,6 +11,7 @@ import { block, composePrompt, loadTemplate, section, type PromptStage } from ".
 import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
 import { loadTask, saveTask } from "./store.js";
+import { runDelegatedReview } from "./review.js";
 
 export interface StageIo {
   now: () => string;
@@ -19,7 +20,7 @@ export interface StageIo {
 }
 
 export interface StageReport {
-  stage: Stage | "invalidate";
+  stage: Stage | "invalidate" | "review";
   outcome: string;
   reason?: string;
   details?: unknown;
@@ -173,7 +174,12 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
   let task = loadTask(root, id);
   const config = workingConfig;
   const next = nextStage(task, config);
-  if (!next.stage) return undefined;
+  if (!next.stage) {
+    if (next.reason === "awaiting_plan_approval" && task.approval === "model") {
+      return (await runDelegatedReview(root, config, id, io)) as StageReport;
+    }
+    return undefined;
+  }
   const stage = next.stage;
   const report = (outcome: string, t: TaskState, reason?: string, details?: unknown): StageReport => ({
     stage,
@@ -350,7 +356,7 @@ export async function runLoop(root: string, config: Config, id: string, io: Stag
     reports.push(r);
     opts.onStage?.(r);
     if (opts.once) break;
-    if (r.outcome === "fail" || r.outcome === "blocked" || r.outcome === "human") break;
+    if (r.outcome === "fail" || r.outcome === "blocked" || r.outcome === "human" || r.outcome === "stale") break;
     if (!r.next.stage) break;
   }
   return reports;

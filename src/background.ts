@@ -7,6 +7,7 @@ import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
 import { openLog } from "./logs.js";
 import { taskDir } from "./store.js";
+import { selfScript } from "./jobs.js";
 
 export interface RunLock {
   runId: string;
@@ -18,7 +19,6 @@ export interface RunLock {
 
 const LOCK = "run.json";
 const STARTING_TIMEOUT_MS = 60_000;
-const CLI_JS = join(fileURLToPath(new URL(".", import.meta.url)), "cli.js");
 
 const lockPath = (root: string, id: string) => join(taskDir(root, id), LOCK);
 
@@ -89,7 +89,7 @@ export function startDetached(root: string, id: string, extraArgs: string[], env
     log.close();
     const fd = openSync(log.path, "a");
     try {
-      const child = spawn(process.execPath, [CLI_JS, "run", id, "--run-id", runId, ...extraArgs], {
+      const child = spawn(process.execPath, [selfScript(), "run", id, "--run-id", runId, ...extraArgs], {
         cwd: root,
         env,
         detached: true,

@@ -7,6 +7,7 @@ import { DevflowError } from "./errors.js";
 import type { Scope } from "./hook.js";
 import { openLog } from "./logs.js";
 import { API_KEY_VARS, buildChildEnv, launch } from "./proc.js";
+import { selfScript } from "./jobs.js";
 
 export type ScopeMode = "enforced" | "sandbox" | "advisory";
 
@@ -55,7 +56,7 @@ export interface Invocation {
   files?: Record<string, string>;
 }
 
-const CLI_JS = join(dirname(fileURLToPath(import.meta.url)), "cli.js");
+
 
 export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash">, settingsPath: string): Invocation {
   const allowed = ["Read", "Grep", "Glob"];
@@ -74,7 +75,7 @@ export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash"
   return { command: "claude", args, scope: "enforced" };
 }
 
-export function claudeSettings(scopePath: string, node = process.execPath, cliJs = CLI_JS): string {
+export function claudeSettings(scopePath: string, node = process.execPath, cliJs = selfScript()): string {
   const q = (s: string) => `"${s}"`;
   const command = [q(node), q(cliJs), "hook", "pre-tool-use", "--scope-file", q(scopePath)].join(" ");
   return JSON.stringify({ hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command }] }] } }, null, 2);

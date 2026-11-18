@@ -32,6 +32,7 @@ export const ConfigSchema = z.strictObject({
     implement: RoleSchema,
     verify: RoleSchema,
     small: RoleSchema,
+    review: RoleSchema.optional(),
   }),
   limits: z.strictObject({
     implement: positiveInt,
@@ -75,7 +76,7 @@ const ROLE_PRESETS = {
   mixed: {
     explore: { runner: "claude", model: "haiku" },
     design: { runner: "claude", model: "opus" },
-    design_complex: { runner: "claude", model: "fable" },
+    design_complex: { runner: "claude", model: "opus" },
     implement: { runner: "claude", model: "sonnet" },
     verify: { runner: "codex", model: "gpt-6.2-sol" },
     small: { runner: "claude", model: "sonnet" },
@@ -83,7 +84,7 @@ const ROLE_PRESETS = {
   claude: {
     explore: { runner: "claude", model: "haiku" },
     design: { runner: "claude", model: "opus" },
-    design_complex: { runner: "claude", model: "fable" },
+    design_complex: { runner: "claude", model: "opus" },
     implement: { runner: "claude", model: "sonnet" },
     verify: { runner: "claude", model: "opus" },
     small: { runner: "claude", model: "sonnet" },
@@ -182,7 +183,7 @@ export interface InitResult {
   warnings: string[];
 }
 
-const GITIGNORE_LINES = ["runs/", "logs/"];
+const GITIGNORE_LINES = ["runs/", "logs/", "jobs/"];
 
 function lstatOrNull(path: string) {
   try {
