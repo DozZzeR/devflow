@@ -31,7 +31,10 @@ process.stdin.on("end", () => {
   }
   if (env.FAKE_FAIL_ROLE && prompt.includes(`You are the ${env.FAKE_FAIL_ROLE} role`)) process.exit(3);
 
-  if (prompt.includes("You are the EXPLORE role")) {
+  if (prompt.includes("You are the REVIEW role")) {
+    console.log("reviewing the plan");
+    console.log(env.FAKE_REVIEW || "APPROVE");
+  } else if (prompt.includes("You are the EXPLORE role")) {
     write(`.devflow/runs/${id}/facts.md`, "## Relevant code\n- src/math.js\n");
   } else if (prompt.includes("You are the DESIGN role")) {
     const dir = `openspec/changes/${id}`;

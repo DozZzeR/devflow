@@ -357,7 +357,8 @@ export async function runLoop(root: string, config: Config, id: string, io: Stag
     opts.onStage?.(r);
     if (opts.once) break;
     if (r.outcome === "fail" || r.outcome === "blocked" || r.outcome === "human" || r.outcome === "stale") break;
-    if (!r.next.stage) break;
+    const delegatedApproval = r.next.reason === "awaiting_plan_approval" && loadTask(root, id).approval === "model";
+    if (!r.next.stage && !delegatedApproval) break;
   }
   return reports;
 }

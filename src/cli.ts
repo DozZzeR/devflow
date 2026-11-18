@@ -484,7 +484,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       case "mcp": {
         arity(args, 0, 0, "mcp");
         const { serveMcp } = await import("./mcp.js");
-        await serveMcp({ cwd: str(p, "dir") ?? io.cwd, env: io.env, now: io.now });
+        await serveMcp({ cwd: str(p, "dir") ?? io.cwd, env: io.env, now: io.now, run });
         return 0;
       }
       case "hook": {

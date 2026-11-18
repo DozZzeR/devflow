@@ -14,9 +14,11 @@ export interface McpContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
   now: () => string;
+  /** The CLI entry (passed in: importing cli.js from here would deadlock on its top-level await). */
+  run: CliRunner;
 }
 
-type CliRunner = (argv: string[], io: { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; now: () => string; readStdin: () => Promise<string> }) => Promise<number>;
+export type CliRunner = (argv: string[], io: { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; now: () => string; readStdin: () => Promise<string> }) => Promise<number>;
 
 /** The plugin's own install directory (bundle: <plugin>/bin/devflow.mjs); never a project. */
 function pluginRoot(): string | undefined {
@@ -57,7 +59,7 @@ function guard<A>(fn: (a: A) => Promise<ReturnType<typeof text>> | ReturnType<ty
 const HUMAN_ONLY = "Records a human decision: call it ONLY when the user has explicitly told you to, in this conversation, for this task and plan revision. Never call it on your own judgement.";
 
 export async function serveMcp(ctx: McpContext): Promise<void> {
-  const { run } = (await import("./cli.js")) as { run: CliRunner };
+  const run = ctx.run;
   const server = new McpServer({ name: "devflow", version: "0.0.0" });
   const project = { projectDir: z.string().optional().describe("Project directory (where .devflow/ lives). Pass your working directory.") };
 
