@@ -38965,8 +38965,10 @@ async function serveMcp(ctx) {
     "devflow_job_status",
     { description: "Status of a background job started by devflow_gate or devflow_roles_propose.", inputSchema: { ...project2, jobId: external_exports.string() } },
     guard(({ projectDir, jobId }) => {
-      const job = readJob(resolveProject(ctx, projectDir), jobId);
-      return text({ ...job, active: jobActive(job), lastLines: tail(job.log, 5) });
+      const root = resolveProject(ctx, projectDir);
+      const job = readJob(root, jobId);
+      const safe = inside(resolve5(job.log), resolve5(root, ".devflow"));
+      return text({ ...job, active: jobActive(job), lastLines: safe ? tail(job.log, 5) : "" });
     })
   );
   server.registerTool("devflow_log", {
@@ -38974,7 +38976,9 @@ async function serveMcp(ctx) {
     inputSchema: { ...project2, id: external_exports.string().optional(), jobId: external_exports.string().optional(), lines: external_exports.number().int().positive().max(2e3).optional() }
   }, guard(({ projectDir, id, jobId, lines }) => {
     const root = resolveProject(ctx, projectDir);
+    if (id) validateId(id);
     const path = jobId ? readJob(root, jobId).log : id ? latestRunLog(root, id) : void 0;
+    if (path && !inside(resolve5(path), resolve5(root, ".devflow"))) throw new DevflowError("unsafe_path", "Log path is outside the project's .devflow folder.");
     if (!path) throw new DevflowError("no_log", "No log found: pass id (task) or jobId.");
     return text(tail(path, lines ?? 200));
   }));
@@ -38993,7 +38997,7 @@ async function serveMcp(ctx) {
   }));
   server.registerTool("devflow_roles_set", {
     description: "Set one role's runner and model.",
-    inputSchema: { ...project2, role: external_exports.string(), runner: external_exports.enum(["claude", "codex", "command"]), model: external_exports.string(), command: external_exports.string().optional() }
+    inputSchema: { ...project2, role: external_exports.string(), runner: external_exports.string().describe("claude, codex or command"), model: external_exports.string(), command: external_exports.string().optional() }
   }, guard(async ({ projectDir, role: role2, runner, model, command }) => cli(resolveProject(ctx, projectDir), ["roles", "set", role2, runner, model, ...command ? ["--command", command] : []])));
   await server.connect(new StdioServerTransport());
   await new Promise((resolveDone) => process.stdin.on("close", () => resolveDone()));
@@ -40292,22 +40296,20 @@ function parseReview(output2) {
 var PROMPT = `You are the REVIEW role in a devflow task. The human delegated plan approval to you. You did not write this plan.
 Judge whether the plan below is ready to implement: requirements are testable and complete for the task, the impact zone covers what must change, the test plan proves the scenarios, tasks are concrete.
 You are in a folder that contains only the plan. Do not edit anything.
-End your answer with exactly one final line, either:
-APPROVE
-or
-REJECT: <the concrete changes the designer must make>
+Your final line must be the single word APPROVE, or the word REJECT followed by a colon and the concrete changes the designer must make (for example "REJECT" + ": add a test for negative input"). Nothing after that line.
 `;
 async function runDelegatedReview(root, config2, id, io) {
   const task = loadTask(root, id);
   const revision = task.planRevision ?? 1;
-  const digest = planDigest(root, id, revision);
   const role2 = reviewRole(config2);
   const dir = mkdtempSync2(join14(tmpdir2(), "devflow-review-"));
+  const copyRoot = join14(dir, "snapshot");
+  if (existsSync11(changeFolder(root, id))) cpSync(changeFolder(root, id), changeFolder(copyRoot, id), { recursive: true });
+  const digest = planDigest(copyRoot, id, revision);
   let output2 = "";
   let runOk = false;
   try {
-    if (existsSync11(changeFolder(root, id))) cpSync(changeFolder(root, id), join14(dir, "plan"), { recursive: true });
-    const plan = changeFiles(root, id).map((f) => block(`plan/${f}`, readFileSync12(join14(changeFolder(root, id), f), "utf8"))).join("");
+    const plan = changeFiles(copyRoot, id).map((f) => block(`plan/${f}`, readFileSync12(join14(changeFolder(copyRoot, id), f), "utf8"))).join("");
     const prompt = `${PROMPT}
 Task id: ${id}
 Task: ${task.description}
@@ -40327,7 +40329,7 @@ ${plan}`;
       task: id,
       parentEnv: io.env,
       savePrompt: true,
-      cwd: dir
+      cwd: changeFolder(copyRoot, id)
     });
     runOk = r.ok;
     output2 = existsSync11(r.log) ? readFileSync12(r.log, "utf8") : "";
@@ -40928,7 +40930,13 @@ async function run(argv, io) {
           const { root, config: config3 } = project(io);
           const id = args[0];
           validateId(id);
-          loadTask(root, id);
+          const current = loadTask(root, id);
+          if (current.status !== "DESIGNED") {
+            throw new DevflowError("not_awaiting_approval", `Task ${id} is not awaiting plan approval (status: ${current.status}).`);
+          }
+          if (revision !== void 0 && revision !== (current.planRevision ?? 1)) {
+            throw new DevflowError("plan_moved", `Revision ${revision} is not the current plan (revision ${current.planRevision ?? 1}).`);
+          }
           const designedByRun = loadTask(root, id).history.some((h) => h.kind === "complete" && h.stage === "design" && h.outcome === "ok" && h.results === "run");
           if (designedByRun && !changeFiles(root, id).length) {
             throw new DevflowError("plan_missing", `The plan folder openspec/changes/${id}/ is missing; run design again (approve --reject) instead of approving.`);
@@ -41072,7 +41080,14 @@ async function run(argv, io) {
         let out;
         if (which === "all") {
           if (nextStage(task, workingConfig).stage === "gates") {
-            const g = await runGatesStage(root, task, workingConfig, { now: io.now, env: io.env });
+            const gateRun = newRunId();
+            acquireLock(root, task.id, { runId: gateRun, status: "running", startedAt: io.now(), pid: process.pid });
+            let g;
+            try {
+              g = await runGatesStage(root, task, workingConfig, { now: io.now, env: io.env });
+            } finally {
+              releaseLock(root, task.id, gateRun);
+            }
             out = { id: task.id, results: g.results, skipped: g.skipped, next: nextStage(g.task, workingConfig) };
             recorded = true;
           } else {

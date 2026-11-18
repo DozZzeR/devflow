@@ -4,7 +4,7 @@
 //   manifests and .mcp.json per client
 // Usage: node scripts/build-plugins.mjs [outDir]   (default: ./plugins)
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,13 @@ const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
 const description = "Role-separated, multi-model development workflow with deterministic gates and OpenSpec-format plans.";
 const author = { name: "DozZzeR" };
 
+if (existsSync(out)) {
+  const entries = readdirSync(out).filter((e) => e !== ".bundle");
+  if (entries.some((e) => e !== "claude" && e !== "codex")) {
+    console.error(`Refusing to replace ${out}: it contains files that are not generated plugins.`);
+    process.exit(1);
+  }
+}
 rmSync(out, { recursive: true, force: true });
 
 // One bundle, written once and copied into both plugins.

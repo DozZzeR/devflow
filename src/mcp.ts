@@ -8,7 +8,7 @@ import { latestRunLog, readLock, startDetached } from "./background.js";
 import { jobActive, readJob, selfScript, startJob, tail } from "./jobs.js";
 import { nextStage } from "./lifecycle.js";
 import { loadConfig } from "./config.js";
-import { loadTask } from "./store.js";
+import { loadTask, validateId } from "./store.js";
 
 export interface McpContext {
   cwd: string;
@@ -138,8 +138,10 @@ export async function serveMcp(ctx: McpContext): Promise<void> {
 
   server.registerTool("devflow_job_status", { description: "Status of a background job started by devflow_gate or devflow_roles_propose.", inputSchema: { ...project, jobId: z.string() } },
     guard(({ projectDir, jobId }) => {
-      const job = readJob(resolveProject(ctx, projectDir), jobId);
-      return text({ ...job, active: jobActive(job), lastLines: tail(job.log, 5) });
+      const root = resolveProject(ctx, projectDir);
+      const job = readJob(root, jobId);
+      const safe = inside(resolve(job.log), resolve(root, ".devflow"));
+      return text({ ...job, active: jobActive(job), lastLines: safe ? tail(job.log, 5) : "" });
     }));
 
   server.registerTool("devflow_log", {
@@ -147,7 +149,9 @@ export async function serveMcp(ctx: McpContext): Promise<void> {
     inputSchema: { ...project, id: z.string().optional(), jobId: z.string().optional(), lines: z.number().int().positive().max(2000).optional() },
   }, guard(({ projectDir, id, jobId, lines }) => {
     const root = resolveProject(ctx, projectDir);
+    if (id) validateId(id);
     const path = jobId ? readJob(root, jobId).log : id ? latestRunLog(root, id) : undefined;
+    if (path && !inside(resolve(path), resolve(root, ".devflow"))) throw new DevflowError("unsafe_path", "Log path is outside the project's .devflow folder.");
     if (!path) throw new DevflowError("no_log", "No log found: pass id (task) or jobId.");
     return text(tail(path, lines ?? 200));
   }));
@@ -166,7 +170,7 @@ export async function serveMcp(ctx: McpContext): Promise<void> {
 
   server.registerTool("devflow_roles_set", {
     description: "Set one role's runner and model.",
-    inputSchema: { ...project, role: z.string(), runner: z.enum(["claude", "codex", "command"]), model: z.string(), command: z.string().optional() },
+    inputSchema: { ...project, role: z.string(), runner: z.string().describe("claude, codex or command"), model: z.string(), command: z.string().optional() },
   }, guard(async ({ projectDir, role, runner, model, command }) =>
     cli(resolveProject(ctx, projectDir), ["roles", "set", role, runner, model, ...(command ? ["--command", command] : [])])));
 

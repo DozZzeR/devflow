@@ -238,7 +238,13 @@ export async function run(argv: string[], io: Io): Promise<number> {
           const { root, config } = project(io);
           const id = args[0]!;
           validateId(id);
-          loadTask(root, id);
+          const current = loadTask(root, id);
+          if (current.status !== "DESIGNED") {
+            throw new DevflowError("not_awaiting_approval", `Task ${id} is not awaiting plan approval (status: ${current.status}).`);
+          }
+          if (revision !== undefined && revision !== (current.planRevision ?? 1)) {
+            throw new DevflowError("plan_moved", `Revision ${revision} is not the current plan (revision ${current.planRevision ?? 1}).`);
+          }
           // With a plan folder, approval re-checks the design and binds the plan and its zone.
           const designedByRun = loadTask(root, id).history.some((h) => h.kind === "complete" && h.stage === "design" && h.outcome === "ok" && h.results === "run");
           if (designedByRun && !changeFiles(root, id).length) {
@@ -383,7 +389,14 @@ export async function run(argv: string[], io: Io): Promise<number> {
         let out: Record<string, unknown>;
         if (which === "all") {
           if (nextStage(task, workingConfig).stage === "gates") {
-            const g = await runGatesStage(root, task, workingConfig, { now: io.now, env: io.env });
+            const gateRun = newRunId();
+            acquireLock(root, task.id, { runId: gateRun, status: "running", startedAt: io.now(), pid: process.pid });
+            let g;
+            try {
+              g = await runGatesStage(root, task, workingConfig, { now: io.now, env: io.env });
+            } finally {
+              releaseLock(root, task.id, gateRun);
+            }
             out = { id: task.id, results: g.results, skipped: g.skipped, next: nextStage(g.task, workingConfig) };
             recorded = true;
           } else {

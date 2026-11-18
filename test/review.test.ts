@@ -95,3 +95,10 @@ test("approve and reject check the plan revision", () => {
   assert.equal(devflow("approve", "r5", "--revision", "1", "--reject", "redo").code, 0);
   write(root, "x.txt", "");
 });
+
+test("the review prompt has no verdict-shaped lines that an echoed prompt could turn into a verdict", async () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "review.js"), "utf8");
+  const promptStart = src.indexOf("You are the REVIEW role");
+  const promptText = src.slice(promptStart, src.indexOf("`;", promptStart));
+  assert.equal(parseReview(promptText), undefined);
+});

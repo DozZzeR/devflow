@@ -23,7 +23,8 @@
 - [x] 5.2 Real checks: install the Claude Code plugin from this repo and call a devflow tool; install the Codex plugin and call a devflow tool; record outcomes here and in the journal
   - Outcome 2026-11-18 (docs/sandbox-calc): Claude Code `claude -p --plugin-dir plugins/claude/devflow` called devflow_status and devflow_roles through the plugin's MCP server and reported both tasks and the verify role. Codex `codex exec` with the plugin's MCP launch (cwd = plugin folder) found the project through `projectDir`; MCP calls were blocked until tools were approved, so the Codex plugin now pre-approves read-only tools only. A marketplace install from GitHub is still to be done by the owner (needs the branch merged).
 - [x] 5.3 `npx openspec validate add-plugins-mcp --strict`, `npx openspec validate --specs --strict`, `npm test`
-- [ ] 5.4 Independent verify by Codex (two rounds max, round 2 high-only)
+- [x] 5.4 Independent verify by Codex (two rounds max, round 2 high-only)
+  - Round 1: REWORK, 14. Fixed: review prompt had verdict-shaped lines that codex echoes into its log (a real misread risk), review now binds the digest of the copy it judged; log paths validated and kept inside .devflow; gate all takes the task lock; approve checks status and revision before design checks; MCP roles_set returns invalid_config; plugin build refuses to replace unrelated directories. Deferred items are in docs/TODO.md.
 
 ## Workflow follow-up
 

@@ -126,3 +126,14 @@ test("devflow_roles_set changes the config", async () => {
     await c.close();
   }
 });
+
+test("devflow_roles_set with an unknown runner returns invalid_config", async () => {
+  const { root, env } = project();
+  const c = await connect(root, env);
+  try {
+    const r = await call(c, "devflow_roles_set", { projectDir: root, role: "verify", runner: "gemini", model: "x" });
+    assert.deepEqual([r.error, r.json.error.reason], [true, "invalid_config"]);
+  } finally {
+    await c.close();
+  }
+});

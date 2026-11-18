@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveCommand } from "../src/proc.js";
@@ -74,4 +74,12 @@ test("claude plugin validate passes (when claude is installed)", (t) => {
   assert.match(r.stdout + r.stderr, /Validation passed/);
   assert.ok(existsSync(join(REPO, ".claude-plugin", "marketplace.json")));
   assert.ok(existsSync(join(REPO, ".agents", "plugins", "marketplace.json")));
+});
+
+test("the build refuses to replace a directory with unrelated files", () => {
+  const dir = tempDir();
+  writeFileSync(join(dir, "keep.txt"), "x");
+  const r = spawnSync(process.execPath, [BUILD, dir], { cwd: REPO, encoding: "utf8" });
+  assert.notEqual(r.status, 0);
+  assert.ok(existsSync(join(dir, "keep.txt")));
 });

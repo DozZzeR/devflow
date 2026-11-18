@@ -56,26 +56,25 @@ export function parseReview(output: string): { verdict: "approve" | "reject"; re
 const PROMPT = `You are the REVIEW role in a devflow task. The human delegated plan approval to you. You did not write this plan.
 Judge whether the plan below is ready to implement: requirements are testable and complete for the task, the impact zone covers what must change, the test plan proves the scenarios, tasks are concrete.
 You are in a folder that contains only the plan. Do not edit anything.
-End your answer with exactly one final line, either:
-APPROVE
-or
-REJECT: <the concrete changes the designer must make>
+Your final line must be the single word APPROVE, or the word REJECT followed by a colon and the concrete changes the designer must make (for example "REJECT" + ": add a test for negative input"). Nothing after that line.
 `;
 
 /** Review a delegated plan in an isolated copy and apply the verdict if nothing changed meanwhile. */
 export async function runDelegatedReview(root: string, config: Config, id: string, io: { now: () => string; env: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<ReviewReport> {
   const task = loadTask(root, id);
   const revision = task.planRevision ?? 1;
-  const digest = planDigest(root, id, revision);
   const role = reviewRole(config);
 
+  // Snapshot the plan first; the digest, the prompt and the review all refer to this copy.
   const dir = mkdtempSync(join(tmpdir(), "devflow-review-"));
+  const copyRoot = join(dir, "snapshot");
+  if (existsSync(changeFolder(root, id))) cpSync(changeFolder(root, id), changeFolder(copyRoot, id), { recursive: true });
+  const digest = planDigest(copyRoot, id, revision);
   let output = "";
   let runOk = false;
   try {
-    if (existsSync(changeFolder(root, id))) cpSync(changeFolder(root, id), join(dir, "plan"), { recursive: true });
-    const plan = changeFiles(root, id)
-      .map((f) => block(`plan/${f}`, readFileSync(join(changeFolder(root, id), f), "utf8")))
+    const plan = changeFiles(copyRoot, id)
+      .map((f) => block(`plan/${f}`, readFileSync(join(changeFolder(copyRoot, id), f), "utf8")))
       .join("");
     const prompt = `${PROMPT}\nTask id: ${id}\nTask: ${task.description}\nPlan revision: ${revision}\n\n${plan}`;
     const r = await runRole({
@@ -91,7 +90,7 @@ export async function runDelegatedReview(root: string, config: Config, id: strin
       task: id,
       parentEnv: io.env,
       savePrompt: true,
-      cwd: dir,
+      cwd: changeFolder(copyRoot, id),
     });
     runOk = r.ok;
     output = existsSync(r.log) ? readFileSync(r.log, "utf8") : "";
