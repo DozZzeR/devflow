@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, findProjectRoot, initProject, loadConfig, parseConfig } from "../src/config.js";
 import { DevflowError } from "../src/errors.js";
@@ -61,11 +61,63 @@ test("init creates config and .gitignore and nothing else", () => {
   const dir = tempDir();
   writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
   const r = initProject(dir);
-  assert.deepEqual([r.configCreated, r.gitignoreCreated], [true, true]);
+  assert.deepEqual([r.configCreated, r.gitignore], [true, "created"]);
   assert.deepEqual(readdirSync(join(dir, ".devflow")).sort(), [".gitignore", "config.json"]);
-  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\n");
+  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\nlogs/\n");
   assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "node_modules/\n");
   assert.equal(loadConfig(dir).language, "en");
+});
+
+test("init upgrades an old .devflow/.gitignore without touching existing lines", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, ".devflow"));
+  writeFileSync(join(dir, ".devflow", ".gitignore"), "runs/\ncustom");
+  const r = initProject(dir);
+  assert.equal(r.gitignore, "updated");
+  assert.equal(readFileSync(join(dir, ".devflow", ".gitignore"), "utf8"), "runs/\ncustom\nlogs/\n");
+});
+
+test("init picks runners from detected CLIs or an override", () => {
+  const roles = (d: string) => loadConfig(d).roles;
+  const codexOnly = tempDir();
+  initProject(codexOnly, { detected: { claude: false, codex: true } });
+  const c = roles(codexOnly);
+  assert.ok(Object.values(c).every((r) => r?.runner === "codex"));
+  assert.notEqual(c.verify.model, c.implement.model);
+
+  const claudeOnly = tempDir();
+  initProject(claudeOnly, { detected: { claude: true, codex: false } });
+  const k = roles(claudeOnly);
+  assert.ok(Object.values(k).every((r) => r?.runner === "claude"));
+  assert.notEqual(k.verify.model, k.implement.model);
+
+  const none = tempDir();
+  const r = initProject(none, { detected: { claude: false, codex: false } });
+  assert.equal(r.runners, "mixed");
+  assert.match(r.warnings.join(" "), /No supported CLI/);
+
+  const forced = tempDir();
+  initProject(forced, { runners: "claude", detected: { claude: true, codex: true } });
+  assert.ok(Object.values(roles(forced)).every((r) => r?.runner === "claude"));
+});
+
+test("runners section: accepted with defaults, unknown keys rejected", () => {
+  const c = parseConfig({ ...base(), runners: { codex: { ignore_user_config: false } } });
+  assert.deepEqual([c.runners.codex.ignore_user_config, c.runners.codex.use_api_key, c.runners.claude.use_api_key], [false, false, false]);
+  assert.deepEqual(parseConfig(base()).runners.env.pass, []);
+  assert.ok(problems({ ...base(), runners: { codex: { turbo: true } } }).includes("runners.codex.turbo: unknown field"));
+});
+
+test("init refuses a linked .devflow directory", (t) => {
+  const dir = tempDir();
+  const target = tempDir();
+  try {
+    symlinkSync(target, join(dir, ".devflow"), "junction");
+  } catch {
+    t.skip("cannot create links here");
+    return;
+  }
+  assert.throws(() => initProject(dir), (e: unknown) => e instanceof DevflowError && e.reason === "unsafe_path");
 });
 
 test("init is idempotent and leaves an existing config unchanged", () => {

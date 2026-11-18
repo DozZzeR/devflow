@@ -2,7 +2,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { findProjectRoot, initProject, loadConfig, type Config } from "./config.js";
+import { findProjectRoot, initProject, loadConfig, type Config, type RunnerMode } from "./config.js";
+import { doctor } from "./doctor.js";
+import { runHook } from "./hook.js";
+import { resolveCommand } from "./proc.js";
+import { runRole } from "./runners.js";
 import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
@@ -10,7 +14,7 @@ import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store
 const USAGE = `devflow — role-separated dev workflow
 
 Usage:
-  devflow init [--dir <path>]
+  devflow init [--dir <path>] [--runners mixed|claude|codex]
   devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>]
   devflow next <id>
   devflow complete <id> <stage> <outcome>
@@ -18,28 +22,35 @@ Usage:
   devflow tier <id> <small|medium|complex>
   devflow escalate <id> --reason "<why>"
   devflow status [<id>] [--json]
+  devflow exec-role <role> --prompt-file <file> [--write <glob>]... [--allow-bash <cmd>]...
+                    [--expect <path>]... [--timeout <seconds>] [--task <id>]
+  devflow doctor [--probe] [--json]
 
 Global: --json (machine-readable errors), --help, --version`;
 
 interface Parsed {
   positional: string[];
   flags: Map<string, string | true>;
+  lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason"]);
-const BOOL_FLAGS = new Set(["json", "resume", "help", "version"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file"]);
+const LIST_FLAGS = new Set(["write", "expect", "allow-bash"]);
+const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe"]);
 
 export function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
+  const lists = new Map<string, string[]>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg.startsWith("--")) {
       const [name, inline] = arg.slice(2).split("=", 2) as [string, string | undefined];
-      if (VALUE_FLAGS.has(name)) {
+      if (VALUE_FLAGS.has(name) || LIST_FLAGS.has(name)) {
         const value = inline ?? argv[++i];
         if (value === undefined || value.startsWith("--")) throw new UsageError(`--${name} needs a value`);
-        flags.set(name, value);
+        if (LIST_FLAGS.has(name)) lists.set(name, [...(lists.get(name) ?? []), value]);
+        else flags.set(name, value);
       } else if (BOOL_FLAGS.has(name)) {
         flags.set(name, true);
       } else {
@@ -49,7 +60,7 @@ export function parseArgs(argv: string[]): Parsed {
       positional.push(arg);
     }
   }
-  return { positional, flags };
+  return { positional, flags, lists };
 }
 
 function str(p: Parsed, name: string): string | undefined {
@@ -79,6 +90,8 @@ function version(): string {
 
 export interface Io {
   cwd: string;
+  env: NodeJS.ProcessEnv;
+  readStdin: () => Promise<string>;
   out: (s: string) => void;
   err: (s: string) => void;
   now: () => string;
@@ -111,7 +124,7 @@ function summary(task: TaskState, config: Config) {
   };
 }
 
-export function run(argv: string[], io: Io): number {
+export async function run(argv: string[], io: Io): Promise<number> {
   let json = argv.includes("--json");
   try {
     const p = parseArgs(argv);
@@ -128,13 +141,19 @@ export function run(argv: string[], io: Io): number {
 
     switch (command) {
       case "init": {
-        arity(args, 0, 0, "init [--dir <path>]");
-        const r = initProject(str(p, "dir") ?? io.cwd);
+        arity(args, 0, 0, "init [--dir <path>] [--runners mixed|claude|codex]");
+        const runners = str(p, "runners");
+        if (runners !== undefined && !["mixed", "claude", "codex"].includes(runners)) {
+          throw new UsageError("--runners must be one of: mixed, claude, codex");
+        }
+        const detected = { claude: !!resolveCommand("claude", io.env), codex: !!resolveCommand("codex", io.env) };
+        const r = initProject(str(p, "dir") ?? io.cwd, runners ? { runners: runners as RunnerMode, detected } : { detected });
         if (json) io.out(JSON.stringify(r));
         else {
-          io.out(r.configCreated ? `Created ${r.root}/.devflow/config.json` : `.devflow/config.json already exists in ${r.root}; left unchanged.`);
-          if (r.gitignoreCreated) io.out(`Created ${r.root}/.devflow/.gitignore`);
+          io.out(r.configCreated ? `Created ${r.root}/.devflow/config.json (runners: ${r.runners})` : `.devflow/config.json already exists in ${r.root}; left unchanged.`);
+          if (r.gitignore !== "unchanged") io.out(`${r.gitignore === "created" ? "Created" : "Updated"} ${r.root}/.devflow/.gitignore`);
         }
+        for (const w of r.warnings) io.err(`devflow: warning: ${w}`);
         return 0;
       }
       case "start": {
@@ -202,6 +221,62 @@ export function run(argv: string[], io: Io): number {
         }
         return 0;
       }
+      case "exec-role": {
+        arity(args, 1, 1, "exec-role <role> --prompt-file <file> [--write <glob>]... [--expect <path>]...");
+        const roleName = args[0]!;
+        const promptFile = str(p, "prompt-file");
+        if (!promptFile) throw new UsageError("exec-role needs --prompt-file");
+        const timeout = str(p, "timeout");
+        const timeoutSec = timeout === undefined ? 1800 : Number(timeout);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) throw new UsageError("--timeout must be a positive number of seconds");
+        const { root, config } = project(io);
+        const role = (config.roles as Record<string, Config["roles"]["explore"] | undefined>)[roleName];
+        if (!role) throw new DevflowError("unknown_role", `Role "${roleName}" is not configured.`);
+        const task = str(p, "task");
+        if (task !== undefined) validateId(task);
+        let prompt: string;
+        try {
+          prompt = readFileSync(promptFile, "utf8");
+        } catch {
+          throw new DevflowError("no_prompt", `Cannot read prompt file ${promptFile}.`);
+        }
+        const result = await runRole({
+          root,
+          roleName,
+          role,
+          config,
+          prompt,
+          write: p.lists.get("write") ?? [],
+          bash: p.lists.get("allow-bash") ?? [],
+          expect: p.lists.get("expect") ?? [],
+          timeoutMs: timeoutSec * 1000,
+          parentEnv: io.env,
+          ...(task !== undefined ? { task } : {}),
+        });
+        io.out(JSON.stringify(result));
+        return result.ok ? 0 : 1;
+      }
+      case "doctor": {
+        arity(args, 0, 0, "doctor [--probe] [--json]");
+        const { root, config } = project(io);
+        const report = await doctor(root, config, p.flags.has("probe"), io.env);
+        if (json) io.out(JSON.stringify(report));
+        else {
+          for (const c of report.clis) io.out(`${c.name}: ${c.path ? `${c.version ?? "?"} (${c.path}), login: ${c.login}` : "not installed"}`);
+          for (const m of report.missing) io.out(`role ${m.role} needs ${m.runner}, which is not installed`);
+          for (const pr of report.probes ?? []) io.out(`probe ${pr.runner}/${pr.model}: ${pr.ok ? "ok" : "FAILED"} in ${pr.durationMs} ms${pr.detail ? ` (${pr.detail})` : ""}`);
+        }
+        const failed = report.missing.length > 0 || (report.probes ?? []).some((x) => !x.ok);
+        return failed ? 1 : 0;
+      }
+      case "hook": {
+        arity(args, 1, 1, "hook pre-tool-use --scope-file <file>");
+        if (args[0] !== "pre-tool-use") throw new UsageError(`Unknown hook "${args[0]}"`);
+        const scopeFile = str(p, "scope-file");
+        if (!scopeFile) throw new UsageError("hook needs --scope-file");
+        io.out(runHook(scopeFile, await io.readStdin()));
+        return 0;
+      }
       default:
         throw new UsageError(`Unknown command "${command}". Run devflow --help.`);
     }
@@ -217,8 +292,15 @@ export function run(argv: string[], io: Io): number {
 
 const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === (await import("node:fs")).realpathSync(process.argv[1]);
 if (invokedDirectly) {
-  process.exitCode = run(process.argv.slice(2), {
+  process.exitCode = await run(process.argv.slice(2), {
     cwd: process.cwd(),
+    env: process.env,
+    readStdin: async () => {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) data += chunk;
+      return data;
+    },
     out: (s) => process.stdout.write(s + "\n"),
     err: (s) => process.stderr.write(s + "\n"),
     now: () => new Date().toISOString(),

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { DevflowError } from "./errors.js";
@@ -44,21 +44,53 @@ export const ConfigSchema = z.strictObject({
   }),
   openspec: z.strictObject({ cli: z.enum(["auto", "on", "off"]) }).optional(),
   logs: z.strictObject({ keep: positiveInt }).optional(),
+  runners: z
+    .strictObject({
+      claude: z.strictObject({ use_api_key: z.boolean().default(false) }).default({ use_api_key: false }),
+      codex: z
+        .strictObject({ use_api_key: z.boolean().default(false), ignore_user_config: z.boolean().default(true) })
+        .default({ use_api_key: false, ignore_user_config: true }),
+      env: z
+        .strictObject({ pass: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_()]*$/, "expected a variable name")).default([]) })
+        .default({ pass: [] }),
+    })
+    .default({ claude: { use_api_key: false }, codex: { use_api_key: false, ignore_user_config: true }, env: { pass: [] } }),
 });
 
 export type Role = z.infer<typeof RoleSchema>;
 export type Config = z.infer<typeof ConfigSchema>;
 
-export const DEFAULT_CONFIG = {
-  language: "en",
-  roles: {
+export type RunnerMode = "mixed" | "claude" | "codex";
+
+const ROLE_PRESETS = {
+  mixed: {
     explore: { runner: "claude", model: "haiku" },
     design: { runner: "claude", model: "opus" },
     design_complex: { runner: "claude", model: "fable" },
     implement: { runner: "claude", model: "sonnet" },
-    verify: { runner: "codex", model: "gpt-5-codex" },
+    verify: { runner: "codex", model: "gpt-6.2-sol" },
     small: { runner: "claude", model: "sonnet" },
   },
+  claude: {
+    explore: { runner: "claude", model: "haiku" },
+    design: { runner: "claude", model: "opus" },
+    design_complex: { runner: "claude", model: "fable" },
+    implement: { runner: "claude", model: "sonnet" },
+    verify: { runner: "claude", model: "opus" },
+    small: { runner: "claude", model: "sonnet" },
+  },
+  codex: {
+    explore: { runner: "codex", model: "gpt-5.6-luna" },
+    design: { runner: "codex", model: "gpt-6.2-sol" },
+    implement: { runner: "codex", model: "gpt-5.6-terra" },
+    verify: { runner: "codex", model: "gpt-5.5" },
+    small: { runner: "codex", model: "gpt-5.6-terra" },
+  },
+} as const;
+
+export const DEFAULT_CONFIG = {
+  language: "en",
+  roles: ROLE_PRESETS.mixed,
   limits: { implement: 3, verify: 2, escalate_after: 2 },
   test: {
     command: "npm test",
@@ -122,30 +154,78 @@ export function loadConfig(root: string): Config {
   return parseConfig(raw);
 }
 
+export function defaultConfig(mode: RunnerMode = "mixed") {
+  return { ...structuredClone(DEFAULT_CONFIG), roles: structuredClone(ROLE_PRESETS[mode]) };
+}
+
+export interface InitOptions {
+  /** Explicit runner choice; otherwise derived from `detected`. */
+  runners?: RunnerMode;
+  /** Which CLIs are on PATH. */
+  detected: { claude: boolean; codex: boolean };
+}
+
 export interface InitResult {
   root: string;
   configCreated: boolean;
-  gitignoreCreated: boolean;
+  gitignore: "created" | "updated" | "unchanged";
+  runners?: RunnerMode;
+  warnings: string[];
 }
 
-/** Create `.devflow/config.json` and `.devflow/.gitignore` if missing. Never touches other files. */
-export function initProject(dir: string): InitResult {
+const GITIGNORE_LINES = ["runs/", "logs/"];
+
+function lstatOrNull(path: string) {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Create `.devflow/config.json` and `.devflow/.gitignore` if missing; upgrade the latter. Never touches other files. */
+export function initProject(dir: string, opts: InitOptions = { detected: { claude: true, codex: true } }): InitResult {
   const root = resolve(dir);
   const devflowDir = join(root, DEVFLOW_DIR);
-  mkdirSync(devflowDir, { recursive: true });
+  const dirStat = lstatOrNull(devflowDir);
+  if (dirStat && (dirStat.isSymbolicLink() || !dirStat.isDirectory())) {
+    throw new DevflowError("unsafe_path", `${devflowDir} is a link or not a directory.`);
+  }
+  if (!dirStat) mkdirSync(devflowDir);
+
+  const warnings: string[] = [];
+  const result: InitResult = { root, configCreated: false, gitignore: "unchanged", warnings };
 
   const configPath = join(devflowDir, CONFIG_FILE);
-  let configCreated = false;
-  if (!existsSync(configPath)) {
-    writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n", { flag: "wx" });
-    configCreated = true;
+  if (!lstatOrNull(configPath)) {
+    let mode = opts.runners;
+    if (!mode) {
+      const { claude, codex } = opts.detected;
+      mode = claude && codex ? "mixed" : codex ? "codex" : claude ? "claude" : "mixed";
+      if (!claude && !codex) warnings.push("No supported CLI (claude, codex) found on PATH; wrote mixed defaults.");
+    }
+    writeFileSync(configPath, JSON.stringify(defaultConfig(mode), null, 2) + "\n", { flag: "wx" });
+    result.configCreated = true;
+    result.runners = mode;
   }
 
   const gitignorePath = join(devflowDir, ".gitignore");
-  let gitignoreCreated = false;
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, "runs/\n", { flag: "wx" });
-    gitignoreCreated = true;
+  const gi = lstatOrNull(gitignorePath);
+  if (!gi) {
+    writeFileSync(gitignorePath, GITIGNORE_LINES.join("\n") + "\n", { flag: "wx" });
+    result.gitignore = "created";
+  } else {
+    if (gi.isSymbolicLink() || !gi.isFile()) {
+      throw new DevflowError("unsafe_path", `${gitignorePath} is a link or not a file.`);
+    }
+    const current = readFileSync(gitignorePath, "utf8");
+    const lines = current.split(/\r?\n/).map((l) => l.trim());
+    const missing = GITIGNORE_LINES.filter((l) => !lines.includes(l));
+    if (missing.length) {
+      const prefix = current.length && !current.endsWith("\n") ? "\n" : "";
+      appendFileSync(gitignorePath, prefix + missing.join("\n") + "\n");
+      result.gitignore = "updated";
+    }
   }
-  return { root, configCreated, gitignoreCreated };
+  return result;
 }
