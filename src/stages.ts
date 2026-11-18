@@ -112,7 +112,7 @@ async function runModel(
     description: task.description,
     ...(task.tracker ? { tracker: task.tracker } : {}),
     language: config.language,
-    outputs: expect.length ? expect.join(", ") : write.join(", "),
+    outputs: `you may write ${write.join(", ")}` + (expect.length ? `; you must produce ${expect.join(", ")}` : ""),
     context,
     testCommand: config.test.command,
     ...(extra.round ? { round: extra.round } : {}),
@@ -170,7 +170,12 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
     case "design": {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
-      const ctx = block("Exploration notes", read(join(runsDir(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root));
+      const rejections = task.history.filter((h) => h.kind === "reject").map((h) => `- ${h.reason ?? ""}`).join("\n");
+      const ctx =
+        block("Exploration notes", read(join(runsDir(root, id), "facts.md"))) +
+        block("Living specs (read as needed)", livingSpecs(root)) +
+        block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) +
+        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "");
       const r = await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`));
       if (!r.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);

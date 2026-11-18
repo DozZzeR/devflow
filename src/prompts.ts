@@ -31,7 +31,7 @@ Only write the files named under "Outputs". Writes elsewhere are blocked or disc
 export const TEMPLATES: Record<PromptStage, string> = {
   explore:
     COMMON_HEADER.replace("{{role}}", "EXPLORE") +
-    `Goal: collect the facts the designer needs. Read the code and the living specs; do not design or change anything.
+    `Goal: collect the facts the designer needs. Read the code and the living specs; do not design or change anything. Ignore the .devflow/ folder (tool state, not project code).
 
 Write a short Markdown file with sections:
 ## Relevant code — files, functions, data that the task touches (with paths)

@@ -30,7 +30,7 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
 
 const HistoryEntrySchema = z.object({
   at: z.string(),
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject"]),
   stage: z.enum(STAGES).optional(),
   gate: z.string().optional(),
   results: z.string().optional(),
@@ -80,6 +80,7 @@ export type Event =
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
   | { kind: "approve"; planDigest?: string; zone?: string[] }
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
+  | { kind: "reject"; reason: string }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
   | { kind: "escalate"; reason: string };
@@ -326,6 +327,16 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
         t.status = "IMPLEMENTED";
       }
       delete t.humanReason;
+      return t;
+    }
+
+    case "reject": {
+      if (task.status !== "DESIGNED") {
+        throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
+      }
+      t.status = "EXPLORED";
+      delete t.planDigest;
+      t.history.push({ at: now, kind: "reject", reason: event.reason });
       return t;
     }
 

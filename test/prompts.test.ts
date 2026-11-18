@@ -76,6 +76,7 @@ function plan(root: string) {
   write(root, "openspec/changes/t1/proposal.md", "# P\n");
   write(root, "openspec/changes/t1/tasks.md", "- [ ] 1.1 x\n");
   write(root, "openspec/changes/t1/design.md", "## Impact zone\n- src/**\n\n## Test plan\n- t\n");
+  write(root, "openspec/changes/t1/specs/a/spec.md", "## ADDED Requirements\n\n### Requirement: X\n\nThe system SHALL x.\n\n#### Scenario: Y\n\n- **WHEN** a\n- **THEN** b\n");
 }
 
 test("design checks: files, zone, test plan, stale deltas, validation modes", async () => {
@@ -88,7 +89,6 @@ test("design checks: files, zone, test plan, stale deltas, validation modes", as
   const ok = await checkDesign(root, "t1", cfg);
   assert.deepEqual([ok.ok, ok.zone], [true, ["src/**"]]);
 
-  write(root, "openspec/changes/t1/specs/a/spec.md", "old");
   const before = new Map([["specs/a/spec.md", "irrelevant"]]);
   const { changeFileHashes } = await import("../src/snapshot.js");
   const same = changeFileHashes(root, "t1");

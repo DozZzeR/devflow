@@ -25,7 +25,7 @@ Usage:
   devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>] [--zone <glob>]...
   devflow next <id>
   devflow complete <id> <stage> <outcome> [--override "<reason>"]   (gates ok needs --override)
-  devflow approve <id> [--resume]
+  devflow approve <id> [--resume | --reject "<what to change>"]
   devflow tier <id> <small|medium|complex>
   devflow escalate <id> --reason "<why>"
   devflow status [<id>] [--json]
@@ -46,7 +46,7 @@ interface Parsed {
   lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject"]);
 const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
 const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow"]);
 
@@ -208,8 +208,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
       }
       case "approve": {
         arity(args, 1, 1, "approve <id> [--resume]");
-        let event: Event = p.flags.has("resume") ? { kind: "resume" } : { kind: "approve" };
-        if (!p.flags.has("resume")) {
+        const rejectReason = str(p, "reject");
+        let event: Event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason } : { kind: "approve" };
+        if (!p.flags.has("resume") && !rejectReason) {
           const { root, config } = project(io);
           const id = args[0]!;
           // With a plan folder, approval re-checks the design and binds the plan and its zone.

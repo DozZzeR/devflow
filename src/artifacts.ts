@@ -68,6 +68,13 @@ export async function checkDesign(root: string, id: string, config: Config, befo
   }
   if (!section(design, "Test plan")) return { ok: false, reason: "missing_test_plan" };
 
+  const deltas = changeFiles(root, id).filter((f) => /^specs\/.+\/spec\.md$/.test(f));
+  const usable = deltas.filter((f) => {
+    const text = readFileSync(join(dir, f), "utf8");
+    return /^###\s+Requirement:/m.test(text) && /^####\s+Scenario:/m.test(text);
+  });
+  if (!usable.length) return { ok: false, reason: "missing_spec_delta", details: { deltas } };
+
   const mode = config.openspec?.cli ?? "auto";
   const cli = openspecCommand(root, config);
   if (mode === "on" && !cli) return { ok: false, reason: "openspec_missing" };
