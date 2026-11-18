@@ -2,7 +2,7 @@
 
 Role-separated, multi-model development workflow with deterministic gates. Plans are written in [OpenSpec](https://github.com/Fission-AI/OpenSpec) change format; stages run through official model CLIs (`claude -p`, `codex exec`) on your own subscriptions.
 
-Status: early. The core state machine, CLI and runners exist; gates, stage prompts with the OpenSpec adapter, the Claude Code / Codex plugins and the MCP server are next. Design: [docs/SPEC.md](docs/SPEC.md).
+Status: early. The core state machine, CLI, runners and gates exist; stage prompts with the OpenSpec adapter, the Claude Code / Codex plugins and the MCP server are next. Design: [docs/SPEC.md](docs/SPEC.md).
 
 ## Build
 
@@ -17,9 +17,10 @@ Requires Node 22+.
 
 ```bash
 devflow init [--runners mixed|claude|codex]     # create .devflow/config.json (+ .gitignore); detects installed CLIs
-devflow start feat-x "Add export" --tracker GF-12   # tier defaults to medium
+devflow start feat-x "Add export" --tracker GF-12 --zone "src/**" --zone "test/**"
+                                               # tier defaults to medium; records git HEAD as the task base
 devflow next feat-x                            # next stage, role and attempt as JSON (read-only)
-devflow complete feat-x explore ok             # record a stage outcome; the only way state advances
+devflow complete feat-x explore ok             # record a stage outcome; gates ok by hand needs --override "<reason>"
 devflow approve feat-x                         # human plan approval (medium/complex)
 devflow approve feat-x --resume                # resume a task waiting for a human
 devflow tier feat-x small                      # human tier change (any direction)
@@ -28,6 +29,9 @@ devflow status [feat-x] [--json]
 devflow exec-role verify --prompt-file p.md --task feat-x --expect .devflow/runs/feat-x/verdict.md
 devflow exec-role implement --prompt-file p.md --write "src/**" --allow-bash "npm test"
 devflow doctor [--probe] [--json]                # CLIs, versions, login; --probe makes one tiny call per runner/model
+devflow zone feat-x --from-design design.md      # zone from a "## Impact zone" section
+devflow base feat-x main                         # set the base commit explicitly
+devflow gate feat-x [zone|tests|rollback|all]    # all: records the gates stage when it is next
 ```
 
 Stages: `explore → design → (approval) → implement → gates → verify` for medium/complex, `implement → gates` for small. Outcomes: `ok|fail` for explore, design, implement, gates; `pass|rework|human` for verify.
@@ -44,3 +48,15 @@ A role is a runner plus a model: `claude` (`claude -p`, Claude subscription), `c
 - The child gets an allowlisted environment only: system variables plus `runners.env.pass`. Session tokens and unrelated secrets in your shell do not reach the model. Vendor API keys are dropped so the CLI uses your subscription, unless `runners.<runner>.use_api_key` is true.
 - Write scope: `claude` runs are `enforced` by a devflow PreToolUse hook injected with `--settings` (your own Claude allow rules cannot bypass it); `codex` runs are `sandbox` (read-only without `--write`, otherwise workspace-write); `command` runs are `advisory`.
 - Expected outputs must be new or changed, non-empty files inside the project; logs go to `.devflow/runs/<task>/logs/` or `.devflow/logs/`, are created exclusively and have tokens redacted.
+
+## Gates
+
+Gates check a task's changes against its base commit, with no model involved. Each ends as `pass`, `fail` (the change is wrong) or `blocked` (the check could not run: no git, no base, setup or baseline failure, timeout).
+
+- **zone**: every changed, added, deleted or untracked file since the base matches the task zone. `.devflow/config.json` counts; only `.devflow/runs/` and `.devflow/logs/` are ignored.
+- **tests**: `test.command` passes in the working tree.
+- **rollback**: in a temporary git worktree at the base, the suite passes; with only the changed test files (`test.paths`) it fails; with the whole change it passes again. Tests that pass without the production change fail the gate as `tests_check_nothing`. Your working tree is never touched.
+
+Settings: `test.setup` (run in the worktree before the baseline and again if `test.setup_inputs` files changed, e.g. `npm ci`), `test.red_exit_codes` (e.g. `[1]` for pytest, so other codes become `blocked`), `test.timeout_seconds`. The test command runs in your shell with your environment: these are your own tests and no model sees that environment.
+
+Repeated gate failures or a zone violation escalate the task by one tier (complex goes to a human); `blocked` goes to a human without escalation.

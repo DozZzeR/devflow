@@ -38,7 +38,8 @@
       "tests/**",
       "**/*.test.*",
       "**/test_*.py"
-    ]
+    ],
+    "setup": "npm ci --no-audit --no-fund"
   },
   "openspec": {
     "cli": "auto"

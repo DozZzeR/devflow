@@ -32,6 +32,8 @@
 | 2026-11-18 | verify `add-runners` (codex gpt-6.2-sol) | verify | HUMAN | `--ignore-user-config` срезал доверие и Windows-песочницу, codex не читал репо → дефолт false |
 | 2026-11-18 | verify `add-runners`, круг 1 | verify | REWORK, 10 | таймаут не убивал дерево внутри песочницы codex (тест «зелёный» за 60 с); хук fail-open; ключи через env.pass |
 | 2026-11-18 | verify `add-runners`, круг 2 | verify | REWORK | дальше глубокое укрепление, см. «Отложенное» |
+| 2026-11-18 | ревью плана `add-gates` (codex, через `exec-role`) | verify | REWORK, 7 | ручной `complete gates ok` в обход проверок; «красный» = любая ошибка; setup только на базе; `.devflow/` целиком в исключениях |
+| 2026-11-18 | ворота на самом devflow (`add-gates`) | — | pass ×3, 95 с | rollback: npm ci, baseline 75 → tests-only красный (ошибка компиляции TS, законный TDD) → полный 98; дерево не тронуто |
 
 ## Известные грабли окружения
 
@@ -52,7 +54,20 @@
 - [ ] Имена standalone-логов с числовым суффиксом.
 - [ ] Job Object вместо `taskkill` на Windows; обход каталогов через дескрипторы.
 
+## Отложенное из `add-gates`
+
+- [ ] Rollback считает «красным» весь прогон: ошибка компиляции или упавший
+      раннер неотличимы от упавшего assert. Нужна дотестовая оценка
+      (per-file rollback или разбор отчёта раннера).
+- [ ] Записи роли в игнорируемые git пути (`node_modules/` и т. п.) не видны воротам zone.
+- [ ] Триггер эскалации «diff вышел за файлы из triage» и verify двумя раннерами на complex.
+- [ ] Привязка вердикта verify к хэшу diff (SPEC §7).
+
 ## Процесс
+
+- [ ] Не писать скрипты правок через `python -c "..."` с обратными кавычками в bash:
+      2026-11-18 это выполнило подстановку команд (в том числе случайный `npm ci`
+      в репо). Только файл-скрипт или Edit.
 
 - [ ] После `openspec archive` автоматически гонять `openspec validate --specs --strict`:
       архив дважды оставил живые спеки с предупреждениями (placeholder Purpose,
@@ -61,7 +76,7 @@
 
 ## Дорожная карта (следующие изменения)
 
-- [ ] Ворота: zone, rollback-check, tests (+ автоэскалация по SPEC §4.4).
+- [x] Ворота: zone, rollback-check, tests (+ автоэскалация по SPEC §4.4) — `add-gates`.
 - [ ] Промпты этапов + `devflow run` + адаптер OpenSpec (change-папка, `## Impact zone` → zone.json).
 - [ ] Плагины Claude Code и Codex из одного источника скиллов.
 - [ ] MCP-сервер (`devflow_run` в фоне, статус, лог).
