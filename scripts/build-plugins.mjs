@@ -71,8 +71,17 @@ writeFileSync(join(codex, ".codex-plugin", "plugin.json"), json({
   mcpServers: "./.mcp.json",
   interface: { displayName: "devflow", shortDescription: "Role-separated dev workflow with gates" },
 }));
+// Read-only tools run without a prompt; tools that record decisions or start work keep Codex's confirmation.
+const readOnly = ["devflow_status", "devflow_next", "devflow_run_status", "devflow_job_status", "devflow_log", "devflow_roles"];
 writeFileSync(join(codex, ".mcp.json"), json({
-  mcpServers: { devflow: { command: "node", args: ["./bin/devflow.mjs", "mcp"], cwd: "." } },
+  mcpServers: {
+    devflow: {
+      command: "node",
+      args: ["./bin/devflow.mjs", "mcp"],
+      cwd: ".",
+      tools: Object.fromEntries(readOnly.map((t) => [t, { approval_mode: "approve" }])),
+    },
+  },
 }));
 
 rmSync(bundleDir, { recursive: true, force: true });

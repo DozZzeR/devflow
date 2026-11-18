@@ -2,7 +2,7 @@
 
 Role-separated, multi-model development workflow with deterministic gates. Plans are written in [OpenSpec](https://github.com/Fission-AI/OpenSpec) change format; stages run through official model CLIs (`claude -p`, `codex exec`) on your own subscriptions.
 
-Status: early. The core state machine, CLI, runners, gates and the `devflow run` loop exist; the Claude Code / Codex plugins and the MCP server are next. Design: [docs/SPEC.md](docs/SPEC.md).
+Status: early (0.1.0). CLI, runners, gates, the `devflow run` loop, an MCP server and Claude Code / Codex plugins exist. Design: [docs/SPEC.md](docs/SPEC.md).
 
 ## Build
 
@@ -79,4 +79,44 @@ devflow log add-muldiv --follow
 - Verify runs in a disposable worktree (base + change) without `design.md`, exploration notes or devflow state; its edits are discarded. A second round looks only at high-severity findings and regressions.
 - Evidence is bound to content: changing the plan after approval needs a new approval; changing code after the gates sends the task back to the gates (three such returns go to a human).
 - `complete gates ok` and `complete verify pass` by hand need `--override "<reason>"`.
+
+## Install as a plugin
+
+Requires Node 22+ on PATH (the plugin runs `node bin/devflow.mjs`, a single bundled file; no `npm install`).
+
+**Claude Code**
+
+```bash
+claude plugin marketplace add DozZzeR/devflow
+claude plugin install devflow@devflow
+```
+
+**Codex**
+
+```bash
+codex plugin marketplace add DozZzeR/devflow
+```
+
+Then enable `devflow` in `/plugins`. Codex starts MCP servers inside the plugin folder, so the assistant passes `projectDir` on every call (the `devflow` skill tells it to). Read-only tools run without a prompt; tools that start work or record a decision ask for confirmation.
+
+Then, in a project: run `devflow init` once (or ask the assistant to), and ask it to do a task "through devflow".
+
+## MCP tools
+
+`devflow mcp` serves: `devflow_status`, `devflow_start`, `devflow_next`, `devflow_run` (background, returns a run id), `devflow_run_status`, `devflow_gate` (background job), `devflow_job_status`, `devflow_log`, `devflow_approve`, `devflow_reject`, `devflow_delegate_approval`, `devflow_roles`, `devflow_roles_propose`, `devflow_roles_set`. Every tool takes `projectDir`; without it the server uses `CLAUDE_PROJECT_DIR`, then its working directory.
+
+**Approval stays yours.** `devflow_approve`, `devflow_reject` and `devflow_delegate_approval` record a human decision: the assistant may call them only on your explicit instruction, they must name the plan revision you saw, and you should not "always allow" them in your client's permission prompt.
+
+## Roles and approval delegation
+
+```bash
+devflow roles                        # role -> runner/model table
+devflow roles propose --probe        # call each installed model once and propose a layout
+devflow roles propose --probe --apply
+devflow roles set verify claude opus
+devflow delegate-approval feat-x --to model   # a reviewer model approves or rejects plans for this task
+devflow delegate-approval feat-x --to human   # give it back
+```
+
+Defaults never use Fable (it needs extra credits); `propose --probe` puts the strongest model that answers on `design_complex` and `review`, and a different model, preferably the other vendor, on `verify`. A delegated reviewer sees only a copy of the plan; if the plan changes while it works, its verdict is discarded; after three model rejections approval returns to you.
 
