@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "devflow": {
+      "command": "node",
+      "args": [
+        "./bin/devflow.mjs",
+        "mcp"
+      ],
+      "cwd": "."
+    }
+  }
+}

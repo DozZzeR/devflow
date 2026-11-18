@@ -99,7 +99,11 @@ function asStage(value: string): Stage {
   return value as Stage;
 }
 
+/** Set by the plugin bundler; absent when running from dist/. */
+declare const __DEVFLOW_VERSION__: string | undefined;
+
 function version(): string {
+  if (typeof __DEVFLOW_VERSION__ !== "undefined") return __DEVFLOW_VERSION__;
   const here = dirname(fileURLToPath(import.meta.url));
   const pkg = JSON.parse(readFileSync(join(here, "..", "..", "package.json"), "utf8")) as { version: string };
   return pkg.version;

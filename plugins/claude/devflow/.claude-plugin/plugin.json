@@ -1,0 +1,15 @@
+{
+  "name": "devflow",
+  "version": "0.1.0",
+  "description": "Role-separated, multi-model development workflow with deterministic gates and OpenSpec-format plans.",
+  "author": {
+    "name": "DozZzeR"
+  },
+  "repository": "https://github.com/DozZzeR/devflow",
+  "keywords": [
+    "workflow",
+    "openspec",
+    "multi-model",
+    "tdd"
+  ]
+}

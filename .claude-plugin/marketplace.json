@@ -1,0 +1,11 @@
+{
+  "name": "devflow",
+  "owner": { "name": "DozZzeR" },
+  "plugins": [
+    {
+      "name": "devflow",
+      "source": "./plugins/claude/devflow",
+      "description": "Role-separated, multi-model development workflow with deterministic gates and OpenSpec-format plans."
+    }
+  ]
+}
