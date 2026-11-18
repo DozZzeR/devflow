@@ -40450,6 +40450,13 @@ function verdictFromAnswer(log) {
   }
   return void 0;
 }
+function lastSavedVerdict(dir, upTo) {
+  for (let n = upTo; n >= 1; n--) {
+    const p = join15(dir, `verdict-round${n}.md`);
+    if (existsSync12(p)) return read(p);
+  }
+  return void 0;
+}
 function gatesSummary(task) {
   const last = [...task.history].reverse().find((h) => h.kind === "gates");
   return last ? `${last.outcome}${last.results ? `: ${last.results}` : ""}` : "";
@@ -40664,6 +40671,8 @@ async function runVerify(root, task, workingConfig, io, report) {
   if (existsSync12(verdictPath)) {
     previous = read(verdictPath);
     renameSync2(verdictPath, join15(dir, `verdict-round${round - 1}.md`));
+  } else {
+    previous = lastSavedVerdict(dir, round - 1);
   }
   const folder = changeFolder(root, id);
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));

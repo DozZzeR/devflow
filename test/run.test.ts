@@ -22,13 +22,14 @@ function setup(extra: Record<string, string> = {}) {
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   const prompts = join(tempDir(), "prompts");
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
-  const devflow = (...args: string[]) => {
-    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
+  const devflowWith = (more: Record<string, string>, ...args: string[]) => {
+    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...more }, encoding: "utf8" });
     return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
   };
+  const devflow = (...args: string[]) => devflowWith({}, ...args);
   const state = (id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
   const lines = (out: string) => out.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
-  return { root, devflow, state, lines, prompts };
+  return { root, devflow, devflowWith, state, lines, prompts };
 }
 
 test("medium task: explore + design, stop for approval; approve binds plan; then implement, gates, verify, DONE", () => {
@@ -167,6 +168,30 @@ test("a verdict given in claude's answer instead of the file is still read", () 
   assert.deepEqual(out.slice(0, 3).map((x) => `${x.stage}:${x.outcome}`), ["implement:ok", "gates:pass", "verify:pass"]);
   assert.equal(state("tva").status, "DONE");
   assert.match(readFileSync(join(root, ".devflow", "runs", "tva", "verdict.md"), "utf8"), /^VERDICT: PASS\n\ndesign-visible: no/);
+});
+
+test("a verify round that produced no verdict does not lose the earlier findings", () => {
+  const { devflow, devflowWith, state, lines, prompts } = setup({ FAKE_VERDICT: "REWORK" });
+  devflow("start", "tpv", "Add mul");
+  devflow("run", "tpv");
+  devflow("approve", "tpv");
+  devflow("run", "tpv", "--once");
+  devflow("run", "tpv", "--once");
+  assert.equal(lines(devflow("run", "tpv", "--once").out)[0].outcome, "rework");
+  devflow("run", "tpv", "--once");
+  devflow("run", "tpv", "--once");
+  const failed = lines(devflowWith({ FAKE_FAIL_ROLE: "VERIFY" }, "run", "tpv", "--once").out)[0];
+  assert.deepEqual([failed.stage, failed.outcome], ["verify", "human"]);
+  assert.equal(devflow("approve", "tpv", "--resume").code, 0);
+  devflow("run", "tpv", "--once");
+  devflow("run", "tpv", "--once");
+  const last = lines(devflowWith({ FAKE_VERDICT: "PASS" }, "run", "tpv", "--once").out)[0];
+  assert.deepEqual([last.stage, last.outcome, last.details.round], ["verify", "pass", 3]);
+  assert.equal(state("tpv").status, "DONE");
+  const verifies = readdirSync(prompts).filter((f) => f.startsWith("VERIFY")).sort();
+  const round3 = readFileSync(join(prompts, verifies.at(-1)!), "utf8");
+  assert.match(round3, /This is round 3/);
+  assert.match(round3, /VERDICT: REWORK\n\ndesign-visible: no/);
 });
 
 test("an edit between gates and verify sends the task back to gates", () => {

@@ -91,6 +91,15 @@ function verdictFromAnswer(log: string): string | undefined {
   return undefined;
 }
 
+/** The newest saved verdict-round<N>.md with N <= upTo. */
+function lastSavedVerdict(dir: string, upTo: number): string | undefined {
+  for (let n = upTo; n >= 1; n--) {
+    const p = join(dir, `verdict-round${n}.md`);
+    if (existsSync(p)) return read(p);
+  }
+  return undefined;
+}
+
 function gatesSummary(task: TaskState): string {
   const last = [...task.history].reverse().find((h) => h.kind === "gates");
   return last ? `${last.outcome}${last.results ? `: ${last.results}` : ""}` : "";
@@ -351,6 +360,10 @@ async function runVerify(
   if (existsSync(verdictPath)) {
     previous = read(verdictPath);
     renameSync(verdictPath, join(dir, `verdict-round${round - 1}.md`));
+  } else {
+    // The last round produced no verdict (it failed): narrow against the last verdict that exists,
+    // or a later round would drop the known findings it is told to re-check.
+    previous = lastSavedVerdict(dir, round - 1);
   }
 
   const folder = changeFolder(root, id);

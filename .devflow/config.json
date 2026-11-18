@@ -18,8 +18,8 @@
       "model": "gpt-6.2-sol"
     },
     "verify": {
-      "runner": "claude",
-      "model": "sonnet"
+      "runner": "codex",
+      "model": "gpt-6.2-sol"
     },
     "small": {
       "runner": "codex",
