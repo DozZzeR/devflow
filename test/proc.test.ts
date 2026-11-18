@@ -47,8 +47,10 @@ test("timeout kills the whole process tree", async () => {
   const bin = fakeBin(join(tempDir(), "bin"), ["codex"]);
   const pidFile = join(tempDir(), "grandchild.pid");
   const env = testEnv(bin, { FAKE_SLEEP: "60000", FAKE_GRANDCHILD: pidFile });
-  const r = await launch({ command: "codex", args: [], cwd: tempDir(), env, stdin: "", timeoutMs: 2_000, onOutput: () => {} });
+  const t0 = Date.now();
+  const r = await launch({ command: "codex", args: [], cwd: tempDir(), env, stdin: "", timeoutMs: 2_000, teardownMs: 3_000, onOutput: () => {} });
   assert.equal(r.timedOut, true);
+  assert.ok(Date.now() - t0 < 15_000, `timeout took ${Date.now() - t0} ms; the fake sleeps 60 s`);
   assert.ok(existsSync(pidFile));
   const pid = Number(readFileSync(pidFile, "utf8"));
   await new Promise((res) => setTimeout(res, 500));

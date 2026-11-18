@@ -71,12 +71,12 @@ The system SHALL check, after the CLI exits, that every expected output is a reg
 
 ### Requirement: Timeout
 
-The system SHALL stop a run that exceeds its timeout (default 30 minutes, overridable per run), terminate the whole process tree, and report `timedOut: true`.
+The system SHALL stop a run that exceeds its timeout (default 30 minutes, overridable per run), terminate the whole process tree, and report `timedOut: true`. If the tree kill cannot be confirmed, the run SHALL still end within a bounded teardown period and report `killFailed: true`.
 
 #### Scenario: Hanging CLI
 
 - **WHEN** the CLI does not exit within a 2-second timeout
-- **THEN** the process tree is terminated, the result has `timedOut: true` and `ok: false`
+- **THEN** the process tree is terminated within seconds (not when the CLI would have exited on its own), the result has `timedOut: true` and `ok: false`
 
 ### Requirement: Run result and logs
 

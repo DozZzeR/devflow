@@ -37,7 +37,7 @@ function safeMkdirs(root: string, parts: string[]): string {
 
 export interface LogFile {
   path: string;
-  write(chunk: string): void;
+  write(chunk: string, stream?: "stdout" | "stderr"): void;
   close(): void;
 }
 
@@ -69,21 +69,27 @@ export function openLog(root: string, role: string, task?: string): LogFile {
     }
   }
 
-  let pending = "";
+  // One line buffer per stream, so interleaved stdout/stderr cannot split a token across redaction.
+  const pending = { stdout: "", stderr: "" };
   const descriptor = fd;
+  let closed = false;
   return {
     path,
-    write(chunk: string) {
-      pending += chunk;
-      const lastNewline = pending.lastIndexOf("\n");
+    write(chunk: string, stream: "stdout" | "stderr" = "stdout") {
+      pending[stream] += chunk;
+      const lastNewline = pending[stream].lastIndexOf("\n");
       if (lastNewline >= 0) {
-        writeSync(descriptor, redact(pending.slice(0, lastNewline + 1)));
-        pending = pending.slice(lastNewline + 1);
+        writeSync(descriptor, redact(pending[stream].slice(0, lastNewline + 1)));
+        pending[stream] = pending[stream].slice(lastNewline + 1);
       }
     },
     close() {
-      if (pending) writeSync(descriptor, redact(pending));
-      pending = "";
+      if (closed) return;
+      closed = true;
+      for (const s of ["stdout", "stderr"] as const) {
+        if (pending[s]) writeSync(descriptor, redact(pending[s]) + "\n");
+        pending[s] = "";
+      }
       closeSync(descriptor);
     },
   };

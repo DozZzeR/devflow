@@ -36,6 +36,8 @@ export interface RunResult {
   scope: ScopeMode;
   apiKeyEnv: "stripped" | "kept";
   log: string;
+  /** The timeout kill could not be confirmed; descendants may still be running. */
+  killFailed?: boolean;
 }
 
 /** What a runner needs to launch: command, args and how the scope is applied. */
@@ -163,52 +165,59 @@ export function validateScope(write: string[], bash: string[]): void {
     throw new DevflowError("invalid_scope", "A read-only run (no --write) cannot be given shell commands.");
   }
   for (const g of write) {
-    if (isAbsolute(g) || g.split(/[\\/]/).includes("..")) {
+    if (isAbsolute(g) || /^[A-Za-z]:/.test(g) || g.split(/[\\/]/).includes("..")) {
       throw new DevflowError("invalid_scope", `Write glob "${g}" must be relative to the project and must not contain "..".`);
     }
   }
+}
+
+/** Names allowed through to the child: configured pass list, minus every vendor API key unless opted in. */
+export function passNames(config: Config, runner: Role["runner"]): { names: string[]; apiKeyEnv: "stripped" | "kept" } {
+  const allKeys: string[] = [...API_KEY_VARS.claude, ...API_KEY_VARS.codex];
+  const isKey = (n: string) => allKeys.some((k) => k.toUpperCase() === n.toUpperCase());
+  const names = config.runners.env.pass.filter((n) => !isKey(n));
+  const optIn =
+    (runner === "claude" && config.runners.claude.use_api_key) || (runner === "codex" && config.runners.codex.use_api_key);
+  if (optIn && (runner === "claude" || runner === "codex")) names.push(...API_KEY_VARS[runner]);
+  return { names, apiKeyEnv: optIn ? "kept" : "stripped" };
 }
 
 /** Run one role once. */
 export async function runRole(req: RunRequest): Promise<RunResult> {
   validateScope(req.write, req.bash);
   const runnerSettings = req.config.runners;
+  // Validate the command template before creating any file.
+  if (req.role.runner === "command") commandInvocation(req.role.command, { model: "", prompt_file: "", cwd: "" });
   const log = openLog(req.root, req.roleName, req.task);
   const prefix = log.path.replace(/\.log$/, "");
 
   let inv: Invocation;
-  let useApiKey = false;
-  switch (req.role.runner) {
-    case "claude": {
-      const scopePath = `${prefix}.scope.json`;
-      const settingsPath = `${prefix}.settings.json`;
-      const scope: Scope = { root: resolve(req.root), write: req.write, bash: req.bash };
-      writeFileSync(scopePath, JSON.stringify(scope, null, 2), { flag: "wx" });
-      writeFileSync(settingsPath, claudeSettings(scopePath), { flag: "wx" });
-      inv = claudeInvocation(req, settingsPath);
-      useApiKey = runnerSettings.claude.use_api_key;
-      break;
-    }
-    case "codex":
-      inv = codexInvocation(req, runnerSettings.codex.ignore_user_config);
-      useApiKey = runnerSettings.codex.use_api_key;
-      break;
-    case "command": {
-      const promptFile = `${prefix}.prompt.md`;
-      writeFileSync(promptFile, req.prompt, { flag: "wx" });
-      inv = commandInvocation(req.role.command, { model: req.role.model, prompt_file: promptFile, cwd: req.root });
-      break;
-    }
-  }
-
-  const extra = [...runnerSettings.env.pass];
-  if (useApiKey && (req.role.runner === "claude" || req.role.runner === "codex")) extra.push(...API_KEY_VARS[req.role.runner]);
-  const env = buildChildEnv(req.parentEnv ?? process.env, extra);
-
-  const before = new Map(req.expect.map((p) => [p, snapshot(req.root, p)] as const));
-  const started = Date.now();
   let launched;
+  let before: Map<string, Snapshot>;
+  const { names, apiKeyEnv } = passNames(req.config, req.role.runner);
   try {
+    switch (req.role.runner) {
+      case "claude": {
+        const scopePath = `${prefix}.scope.json`;
+        const settingsPath = `${prefix}.settings.json`;
+        const scope: Scope = { root: resolve(req.root), write: req.write, bash: req.bash };
+        writeFileSync(scopePath, JSON.stringify(scope, null, 2), { flag: "wx" });
+        writeFileSync(settingsPath, claudeSettings(scopePath), { flag: "wx" });
+        inv = claudeInvocation(req, settingsPath);
+        break;
+      }
+      case "codex":
+        inv = codexInvocation(req, runnerSettings.codex.ignore_user_config);
+        break;
+      case "command": {
+        const promptFile = `${prefix}.prompt.md`;
+        writeFileSync(promptFile, req.prompt, { flag: "wx" });
+        inv = commandInvocation(req.role.command, { model: req.role.model, prompt_file: promptFile, cwd: req.root });
+        break;
+      }
+    }
+    const env = buildChildEnv(req.parentEnv ?? process.env, names);
+    before = new Map(req.expect.map((p) => [p, snapshot(req.root, p)] as const));
     launched = await launch({
       command: inv.command,
       args: inv.args,
@@ -216,23 +225,25 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
       env,
       stdin: req.prompt,
       timeoutMs: req.timeoutMs,
-      onOutput: (c) => log.write(c),
+      onOutput: (c, stream) => log.write(c, stream),
     });
   } finally {
     log.close();
   }
   const missingOutputs = checkOutputs(req.root, req.expect, before);
-  return {
+  const result: RunResult = {
     ok: launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
     role: req.roleName,
     runner: req.role.runner,
     model: req.role.model,
     exitCode: launched.exitCode,
-    durationMs: launched.durationMs || Date.now() - started,
+    durationMs: launched.durationMs,
     timedOut: launched.timedOut,
     missingOutputs,
     scope: inv.scope,
-    apiKeyEnv: useApiKey ? "kept" : "stripped",
+    apiKeyEnv,
     log: log.path,
   };
+  if (launched.killFailed) result.killFailed = true;
+  return result;
 }

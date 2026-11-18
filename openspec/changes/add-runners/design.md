@@ -67,6 +67,8 @@ Core lifecycle, config and CLI exist (`openspec/specs/task-lifecycle`, `project-
 
 ## Risks / Trade-offs
 
+- [Known limitations after independent review, accepted for this change] Windows tree kill uses `taskkill /T` (absolute path, verified exit code, `child.kill` fallback, 5 s bounded teardown, `killFailed` reported) rather than a Job Object; inside restricted sandboxes `taskkill` can fail, which is now reported instead of waiting. Path checks resolve links in the nearest existing ancestor (hook) and refuse linked log directories, but are path-based, not handle-based, so a race that swaps a directory between check and use is not prevented. File-symlink tests are skipped on Windows without the symlink privilege.
+
 - [Codex cannot enforce globs] → reported as `sandbox`; zone gate catches violations after the run.
 - [Model names drift] → defaults are data in config; `doctor --probe` reveals unknown models early.
 - [`claude auth status` may not exist in all versions] → report `unknown`, never fail doctor on it.

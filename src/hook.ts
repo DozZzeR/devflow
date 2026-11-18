@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { matchesAny } from "./glob.js";
 
@@ -22,6 +22,24 @@ const PATH_KEYS: Record<string, string> = {
 
 export type Decision = { allow: true } | { allow: false; reason: string };
 
+/** Resolve links in the nearest existing ancestor, so a linked directory cannot redirect a write. */
+function effectivePath(abs: string): string {
+  let existing = abs;
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return abs;
+    rest.unshift(existing.slice(parent.length).replace(/^[\\/]/, ""));
+    existing = parent;
+  }
+  return join(realpathSync.native(existing), ...rest);
+}
+
+function outside(root: string, target: string): string | undefined {
+  const rel = relative(root, target);
+  return !rel || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..") ? undefined : rel;
+}
+
 export function decide(scope: Scope, toolName: string, toolInput: Record<string, unknown>): Decision {
   if (READ_ONLY_TOOLS.has(toolName)) return { allow: true };
 
@@ -29,10 +47,14 @@ export function decide(scope: Scope, toolName: string, toolInput: Record<string,
   if (pathKey) {
     const raw = toolInput[pathKey];
     if (typeof raw !== "string" || !raw) return { allow: false, reason: `${toolName} without a path` };
-    const abs = isAbsolute(raw) ? resolve(raw) : resolve(scope.root, raw);
-    const rel = relative(resolve(scope.root), abs);
-    if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) {
-      return { allow: false, reason: `devflow: ${raw} is outside the project` };
+    const root = resolve(scope.root);
+    const abs = isAbsolute(raw) ? resolve(raw) : resolve(root, raw);
+    const rel = outside(root, abs);
+    if (rel === undefined) return { allow: false, reason: `devflow: ${raw} is outside the project` };
+    const realRoot = existsSync(root) ? realpathSync.native(root) : root;
+    const realRel = outside(realRoot, effectivePath(abs));
+    if (realRel === undefined || !matchesAny(realRel, scope.write)) {
+      return { allow: false, reason: `devflow: ${raw} resolves outside this role's write scope` };
     }
     if (!matchesAny(rel, scope.write)) {
       return { allow: false, reason: `devflow: ${rel.replace(/\\/g, "/")} is outside this role's write scope` };
@@ -49,18 +71,18 @@ export function decide(scope: Scope, toolName: string, toolInput: Record<string,
   return { allow: false, reason: `devflow: tool ${toolName} is not allowed for this role` };
 }
 
-/** Claude Code PreToolUse hook entry point: reads the event JSON on stdin, prints a decision. */
+/** Claude Code PreToolUse hook entry point: reads the event JSON on stdin, prints a decision. Fails closed. */
 export function runHook(scopeFile: string, stdinText: string): string {
-  const scope = ScopeSchema.parse(JSON.parse(readFileSync(scopeFile, "utf8")));
-  let event: { tool_name?: unknown; tool_input?: unknown };
+  let d: Decision;
   try {
-    event = JSON.parse(stdinText) as typeof event;
-  } catch {
-    return deny("devflow: unreadable hook input");
+    const scope = ScopeSchema.parse(JSON.parse(readFileSync(scopeFile, "utf8")));
+    const event = JSON.parse(stdinText) as { tool_name?: unknown; tool_input?: unknown };
+    const tool = typeof event.tool_name === "string" ? event.tool_name : "";
+    const input = event.tool_input && typeof event.tool_input === "object" ? (event.tool_input as Record<string, unknown>) : {};
+    d = decide(scope, tool, input);
+  } catch (e) {
+    d = { allow: false, reason: `devflow: hook error, denying: ${(e as Error).message.split(/\r?\n/)[0]}` };
   }
-  const tool = typeof event.tool_name === "string" ? event.tool_name : "";
-  const input = event.tool_input && typeof event.tool_input === "object" ? (event.tool_input as Record<string, unknown>) : {};
-  const d = decide(scope, tool, input);
   return d.allow
     ? JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } })
     : deny(d.reason);

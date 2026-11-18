@@ -31,7 +31,7 @@ test("logs are created exclusively with increasing numbers and redacted on write
   const b = openLog(root, "verify", "t1");
   b.close();
   assert.deepEqual([basename(a.path), basename(b.path)], ["verify-1.log", "verify-2.log"]);
-  assert.equal(readFileSync(a.path, "utf8"), "Authorization: Bearer [REDACTED]\npartial");
+  assert.equal(readFileSync(a.path, "utf8"), "Authorization: Bearer [REDACTED]\npartial\n");
 });
 
 test("task ids that escape are rejected and nothing is created", () => {
@@ -50,4 +50,16 @@ test("a linked runs directory is refused", (t) => {
     return;
   }
   assert.throws(() => openLog(root, "verify", "t1"), reason("unsafe_path"));
+});
+
+test("stdout and stderr are buffered separately, so interleaving cannot split a token", () => {
+  const root = tempDir();
+  const log = openLog(root, "verify");
+  log.write("Authorization: Bearer abcd", "stdout");
+  log.write("noise from stderr\n", "stderr");
+  log.write("efghijklmn\n", "stdout");
+  log.close();
+  const text = readFileSync(log.path, "utf8");
+  assert.ok(!text.includes("abcdefghijklmn"), text);
+  assert.match(text, /Bearer \[REDACTED\]/);
 });

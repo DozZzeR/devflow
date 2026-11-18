@@ -196,6 +196,12 @@ export function initProject(dir: string, opts: InitOptions = { detected: { claud
   const warnings: string[] = [];
   const result: InitResult = { root, configCreated: false, gitignore: "unchanged", warnings };
 
+  const gitignorePath = join(devflowDir, ".gitignore");
+  const gi = lstatOrNull(gitignorePath);
+  if (gi && (gi.isSymbolicLink() || !gi.isFile())) {
+    throw new DevflowError("unsafe_path", `${gitignorePath} is a link or not a file.`);
+  }
+
   const configPath = join(devflowDir, CONFIG_FILE);
   if (!lstatOrNull(configPath)) {
     let mode = opts.runners;
@@ -209,15 +215,10 @@ export function initProject(dir: string, opts: InitOptions = { detected: { claud
     result.runners = mode;
   }
 
-  const gitignorePath = join(devflowDir, ".gitignore");
-  const gi = lstatOrNull(gitignorePath);
   if (!gi) {
     writeFileSync(gitignorePath, GITIGNORE_LINES.join("\n") + "\n", { flag: "wx" });
     result.gitignore = "created";
   } else {
-    if (gi.isSymbolicLink() || !gi.isFile()) {
-      throw new DevflowError("unsafe_path", `${gitignorePath} is a link or not a file.`);
-    }
     const current = readFileSync(gitignorePath, "utf8");
     const lines = current.split(/\r?\n/).map((l) => l.trim());
     const missing = GITIGNORE_LINES.filter((l) => !lines.includes(l));

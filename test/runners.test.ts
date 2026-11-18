@@ -75,3 +75,18 @@ test("outputs: missing, empty, stale, outside project; new and changed files pas
     { path: "../out.json", problem: "outside_project" },
   ]);
 });
+
+test("API keys listed in env.pass are dropped unless the runner opts in", async () => {
+  const { passNames } = await import("../src/runners.js");
+  const { config: cfg } = await import("./helpers.js");
+  const c = cfg();
+  c.runners.env.pass = ["HTTPS_PROXY", "openai_api_key", "ANTHROPIC_API_KEY"];
+  assert.deepEqual(passNames(c, "codex"), { names: ["HTTPS_PROXY"], apiKeyEnv: "stripped" });
+  c.runners.codex.use_api_key = true;
+  assert.deepEqual(passNames(c, "codex"), { names: ["HTTPS_PROXY", "OPENAI_API_KEY"], apiKeyEnv: "kept" });
+  assert.deepEqual(passNames(c, "claude").names, ["HTTPS_PROXY"]);
+});
+
+test("drive-relative write globs are rejected", () => {
+  assert.throws(() => validateScope(["C:src/**"], []), reason("invalid_scope"));
+});

@@ -84,29 +84,46 @@ export interface LaunchOptions {
   env: NodeJS.ProcessEnv;
   stdin: string;
   timeoutMs: number;
-  onOutput: (chunk: string) => void;
+  onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
+  /** How long to wait for the process to close after the tree kill before giving up (default 5 s). */
+  teardownMs?: number;
 }
 
 export interface LaunchResult {
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
+  /** Set when the tree kill could not be confirmed; descendants may still be running. */
+  killFailed?: boolean;
 }
 
-function killTree(pid: number): void {
+/** Longest delay setTimeout accepts without overflowing to ~1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Kill the process tree. Returns false when the kill could not be confirmed. */
+export function killTree(pid: number): boolean {
   if (IS_WINDOWS) {
-    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
+    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+    const r = spawnSync(join(systemRoot, "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      env: { SystemRoot: systemRoot },
+      windowsHide: true,
+    });
+    return r.status === 0;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+    return true;
+  } catch {
+    return false;
   }
 }
 
 /** Spawn, write stdin and close it, stream output, enforce the timeout by killing the whole tree. */
 export function launch(opts: LaunchOptions): Promise<LaunchResult> {
+  if (!(opts.timeoutMs > 0) || opts.timeoutMs > MAX_TIMER_MS) {
+    return Promise.reject(new DevflowError("invalid_timeout", `Timeout must be between 1 ms and ${MAX_TIMER_MS} ms.`));
+  }
   const resolved = resolveCommand(opts.command, opts.env);
   if (!resolved) {
     return Promise.reject(new DevflowError("cli_not_found", `"${opts.command}" was not found on PATH.`));
@@ -127,25 +144,48 @@ export function launch(opts: LaunchOptions): Promise<LaunchResult> {
 
   return new Promise((resolvePromise, reject) => {
     let timedOut = false;
+    let killFailed = false;
+    let settled = false;
+    let teardown: NodeJS.Timeout | undefined;
+    const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (teardown) clearTimeout(teardown);
+      const result: LaunchResult = { exitCode, timedOut, durationMs: Date.now() - started };
+      if (killFailed) result.killFailed = true;
+      resolvePromise(result);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid) killTree(child.pid);
+      const killed = child.pid !== undefined && killTree(child.pid);
+      if (!killed) {
+        child.kill("SIGKILL");
+        killFailed = true;
+      }
+      // Descendants can keep the pipes open; never wait for them forever.
+      teardown = setTimeout(() => {
+        killFailed = true;
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(null);
+      }, opts.teardownMs ?? 5_000);
     }, opts.timeoutMs);
 
-    child.stdout.setEncoding("utf8").on("data", opts.onOutput);
-    child.stderr.setEncoding("utf8").on("data", opts.onOutput);
+    child.stdout.setEncoding("utf8").on("data", (c: string) => opts.onOutput(c, "stdout"));
+    child.stderr.setEncoding("utf8").on("data", (c: string) => opts.onOutput(c, "stderr"));
     child.stdin.on("error", () => {
       /* child may exit before reading stdin */
     });
     child.stdin.end(opts.stdin);
 
     child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (teardown) clearTimeout(teardown);
       reject(e);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ exitCode: code, timedOut, durationMs: Date.now() - started });
-    });
+    child.on("close", (code) => finish(timedOut ? null : code));
   });
 }

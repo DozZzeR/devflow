@@ -140,3 +140,19 @@ test("project root is found from a subdirectory; absent root is an error", () =>
   assert.ok(!existsSync(join(bare, ".devflow")));
   assert.throws(() => findProjectRoot(bare), (e: unknown) => e instanceof DevflowError && e.reason === "no_project");
 });
+
+test("init refuses a linked .gitignore before creating the config", (t) => {
+  const dir = tempDir();
+  mkdirSync(join(dir, ".devflow"));
+  const target = join(tempDir(), "elsewhere.txt");
+  writeFileSync(target, "x");
+  try {
+    symlinkSync(target, join(dir, ".devflow", ".gitignore"), "file");
+  } catch {
+    t.skip("cannot create file links here");
+    return;
+  }
+  assert.throws(() => initProject(dir), (e: unknown) => e instanceof DevflowError && e.reason === "unsafe_path");
+  assert.ok(!existsSync(join(dir, ".devflow", "config.json")));
+  assert.equal(readFileSync(target, "utf8"), "x");
+});
