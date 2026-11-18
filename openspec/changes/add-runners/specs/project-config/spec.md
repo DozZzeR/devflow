@@ -38,7 +38,7 @@
 
 ### Requirement: Runner settings
 
-The configuration SHALL accept an optional `runners` section with per-runner settings, strictly validated like the rest of the file: `runners.claude.use_api_key` (boolean, default false), `runners.codex.use_api_key` (boolean, default false) and `runners.codex.ignore_user_config` (boolean, default true).
+The configuration SHALL accept an optional `runners` section with per-runner settings, strictly validated like the rest of the file: `runners.claude.use_api_key` (boolean, default false), `runners.codex.use_api_key` (boolean, default false), `runners.codex.ignore_user_config` (boolean, default true) and `runners.env.pass` (list of environment variable names, default empty).
 
 #### Scenario: Runner settings accepted
 

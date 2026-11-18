@@ -2,7 +2,7 @@
 
 ## 1. Process helper
 
-- [ ] 1.1 Implement `resolveCommand` (PATH + PATHEXT) and `launch` (explicit child env, stdin write+close, timeout with tree kill, `.cmd` via `cmd.exe /d /v:off /s /c` with double quoting and metacharacter refusal for path and args); verify `test/proc.test.ts`
+- [ ] 1.1 Implement `resolveCommand` (PATH + PATHEXT) and `launch` (allowlisted child env with `runners.env.pass`, stdin write+close, timeout with tree kill, `.cmd` via `cmd.exe /d /v:off /s /c` with double quoting and metacharacter refusal for path and args); verify `test/proc.test.ts`
 - [ ] 1.2 Implement log writer (validated task id, realpath containment in `.devflow`, exclusive create, redaction); verify `test/logs.test.ts`
 
 ## 2. Runners

@@ -124,9 +124,23 @@ The system MUST NOT read, copy, store or transmit the CLIs' credentials or sessi
 - **WHEN** a user is signed in to `claude` or `codex` with a subscription
 - **THEN** runs use that sign-in through the unmodified CLI and devflow's files contain no token
 
+### Requirement: Child environment allowlist
+
+The system SHALL build the child environment from an allowlist, not by inheriting the parent's: OS and runtime variables the CLIs need (path, home, profile, temp, locale, system root and similar), the CLI's own config-location variables, and names listed in `runners.env.pass`. Every other parent variable MUST NOT reach the child.
+
+#### Scenario: Unrelated secret in the parent shell
+
+- **WHEN** `MEMPALACE_TOKEN` is set in the parent environment and not listed in `runners.env.pass`
+- **THEN** the child process environment does not contain `MEMPALACE_TOKEN`
+
+#### Scenario: Explicit pass-through
+
+- **WHEN** `runners.env.pass` contains `HTTPS_PROXY`
+- **THEN** the child receives `HTTPS_PROXY` from the parent
+
 ### Requirement: Subscription preference
 
-By default the system SHALL remove API-key variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` for `claude`; `OPENAI_API_KEY` for `codex`) from the child environment so the CLI's subscription sign-in is used; `runners.<runner>.use_api_key: true` keeps them. The result SHALL state `apiKeyEnv: stripped | kept`; it MUST NOT claim which source the CLI finally used, since CLI settings (for example an API-key helper) can still select one.
+API-key variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` for `claude`; `OPENAI_API_KEY` for `codex`) SHALL NOT be passed by default, so the CLI's subscription sign-in is used; `runners.<runner>.use_api_key: true` passes them even if absent from `runners.env.pass`. The result SHALL state `apiKeyEnv: stripped | kept`; it MUST NOT claim which source the CLI finally used, since CLI settings (for example an API-key helper) can still select one.
 
 #### Scenario: API key present in the shell
 
