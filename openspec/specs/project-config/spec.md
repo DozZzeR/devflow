@@ -1,7 +1,7 @@
 # project-config Specification
 
 ## Purpose
-TBD - created by archiving change add-core-state-machine. Update Purpose after archive.
+Defines the per-project devflow configuration file (`.devflow/config.json`): which runner and model serve each role, attempt limits, the test command and artifact language, how it is validated, and how `devflow init` creates it.
 
 ## Requirements
 

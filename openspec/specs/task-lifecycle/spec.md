@@ -1,7 +1,7 @@
 # task-lifecycle Specification
 
 ## Purpose
-TBD - created by archiving change add-core-state-machine. Update Purpose after archive.
+Defines how a devflow task moves through stages and tiers: which stage runs next, how outcomes are recorded, attempt limits, escalation, decisions reserved for humans, and how task state is persisted.
 
 ## Requirements
 
