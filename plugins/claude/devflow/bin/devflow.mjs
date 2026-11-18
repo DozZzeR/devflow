@@ -32996,8 +32996,8 @@ var require_utils = __commonJS({
       }
       if (bestLength < 2) return hextets.join(":");
       const head = hextets.slice(0, bestStart).join(":");
-      const tail2 = hextets.slice(bestStart + bestLength).join(":");
-      return head + "::" + tail2;
+      const tail3 = hextets.slice(bestStart + bestLength).join(":");
+      return head + "::" + tail3;
     }
     function normalizeIPv6Address(input2) {
       const compression = input2.indexOf("::");
@@ -40250,7 +40250,7 @@ init_background();
 // src/stages.ts
 init_config();
 init_errors3();
-import { copyFileSync as copyFileSync2, existsSync as existsSync12, lstatSync as lstatSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync2, rmSync as rmSync6 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync12, lstatSync as lstatSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname6, join as join15 } from "node:path";
 init_lifecycle();
 init_store();
@@ -40428,7 +40428,41 @@ async function runGatesStage(root, task, workingConfig, io) {
   } else {
     event = { kind: "gates", outcome: last.outcome, gate: last.name, results: summary2, ...last.reason ? { reason: last.reason } : {} };
   }
-  return { task: record2(root, task, event, config2, io), results, skipped, configSource: source };
+  const recorded = record2(root, task, event, config2, io);
+  saveGatesFailure(root, task.id, last.outcome === "pass" ? void 0 : results);
+  return { task: recorded, results, skipped, configSource: source };
+}
+var GATES_FAILURE = "gates-failure.md";
+var LOG_TAIL_LINES = 80;
+function tail2(text2, lines) {
+  const all = text2.split(/\r?\n/);
+  return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
+}
+function saveGatesFailure(root, id, results) {
+  const path = join15(runsDir2(root, id), GATES_FAILURE);
+  if (!results) {
+    rmSync6(path, { force: true });
+    return;
+  }
+  const parts = results.filter((r) => r.outcome !== "pass").map((r) => {
+    const { log, logs, ...rest } = r.details ?? {};
+    const files = [log, ...Array.isArray(logs) ? logs : []].filter((l) => typeof l === "string");
+    const extra = Object.keys(rest).length ? `
+Details: ${JSON.stringify(rest)}` : "";
+    const logText = files.length ? `
+Log tail:
+${tail2(read(files[files.length - 1]), LOG_TAIL_LINES)}` : "";
+    return `Gate ${r.name}: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}${extra}${logText}`;
+  });
+  writeFileSync7(path, parts.join("\n\n") + "\n");
+}
+function reworkFeedback(root, task) {
+  const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
+  const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
+  const dir = runsDir2(root, task.id);
+  const verdict = lastVerify?.outcome === "rework" ? read(join15(dir, "verdict.md")) : "";
+  const gates = lastGates && lastGates.outcome !== "pass" ? read(join15(dir, GATES_FAILURE)) : "";
+  return block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates);
 }
 function role(stage, task, config2) {
   const r = roleFor(stage, task.tier, config2);
@@ -40553,7 +40587,7 @@ async function runNextStage(root, workingConfig, id, io) {
       const tasksMd = `openspec/changes/${id}/tasks.md`;
       const zone = task.zone?.length ? task.zone : small ? ["**"] : [];
       if (!zone.length) throw new DevflowError("no_zone", `Task ${id} has no impact zone; approve a design or set one with "devflow zone".`);
-      const ctx = small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z2) => `- ${z2}`).join("\n"));
+      const ctx = (small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z2) => `- ${z2}`).join("\n"))) + reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config2.test.command] });
       task = record2(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config2, io);

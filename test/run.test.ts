@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakeAgentBin } from "./fake.js";
@@ -92,6 +92,45 @@ test("verifier edits are discarded; rework returns to implement", () => {
   assert.match(math, /mul/);
   assert.doesNotMatch(math, /verifier was here/);
   assert.equal(state("t4").status, "PLAN_APPROVED");
+});
+
+const implementPrompts = (dir: string) =>
+  readdirSync(dir)
+    .filter((f) => f.startsWith("IMPLEMENT"))
+    .sort()
+    .map((f) => readFileSync(join(dir, f), "utf8"));
+
+test("after REWORK the next implement prompt carries the verify verdict", () => {
+  const { devflow, lines, prompts } = setup({ FAKE_VERDICT: "REWORK" });
+  devflow("start", "t4v", "Add mul");
+  devflow("run", "t4v");
+  devflow("approve", "t4v");
+  devflow("run", "t4v", "--once");
+  devflow("run", "t4v", "--once");
+  assert.equal(lines(devflow("run", "t4v", "--once").out)[0].outcome, "rework");
+  assert.equal(lines(devflow("run", "t4v", "--once").out)[0].stage, "implement");
+  const [first, second] = implementPrompts(prompts);
+  assert.doesNotMatch(first!, /Verify verdict on the previous attempt/);
+  assert.match(second!, /## Verify verdict on the previous attempt[^\n]*\n\nVERDICT: REWORK\n\ndesign-visible: no/);
+});
+
+test("after a gate failure the next implement prompt carries the gate and its log tail", () => {
+  const { root, devflow, lines, prompts } = setup();
+  devflow("start", "t4g", "Add mul");
+  devflow("run", "t4g");
+  devflow("approve", "t4g");
+  devflow("run", "t4g", "--once");
+  write(root, "tests/broken.test.js", "throw new Error('GATE-FAIL-MARKER');\n");
+  const g = lines(devflow("run", "t4g", "--once").out)[0];
+  assert.deepEqual([g.stage, g.outcome], ["gates", "fail"]);
+  devflow("run", "t4g", "--once");
+  const [first, second] = implementPrompts(prompts);
+  assert.doesNotMatch(first!, /Gate failure on the previous attempt/);
+  assert.match(second!, /## Gate failure on the previous attempt[\s\S]*Gate tests: fail[\s\S]*GATE-FAIL-MARKER/);
+  // Once the gates pass, the old failure is no longer offered.
+  write(root, "tests/broken.test.js", "\n");
+  assert.equal(lines(devflow("run", "t4g", "--once").out)[0].outcome, "pass");
+  assert.equal(existsSync(join(root, ".devflow", "runs", "t4g", "gates-failure.md")), false);
 });
 
 test("an edit between gates and verify sends the task back to gates", () => {

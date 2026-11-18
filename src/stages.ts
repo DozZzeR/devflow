@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.js";
 import { DEVFLOW_DIR } from "./config.js";
@@ -93,7 +93,49 @@ export async function runGatesStage(root: string, task: TaskState, workingConfig
   } else {
     event = { kind: "gates", outcome: last.outcome, gate: last.name, results: summary, ...(last.reason ? { reason: last.reason } : {}) };
   }
-  return { task: record(root, task, event, config, io), results, skipped, configSource: source };
+  const recorded = record(root, task, event, config, io);
+  saveGatesFailure(root, task.id, last.outcome === "pass" ? undefined : results);
+  return { task: recorded, results, skipped, configSource: source };
+}
+
+const GATES_FAILURE = "gates-failure.md";
+const LOG_TAIL_LINES = 80;
+
+function tail(text: string, lines: number): string {
+  const all = text.split(/\r?\n/);
+  return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
+}
+
+/** Keep what the implementer needs to fix a gate failure; a pass clears it. */
+function saveGatesFailure(root: string, id: string, results: GateResult[] | undefined): void {
+  const path = join(runsDir(root, id), GATES_FAILURE);
+  if (!results) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const parts = results
+    .filter((r) => r.outcome !== "pass")
+    .map((r) => {
+      const { log, logs, ...rest } = (r.details ?? {}) as Record<string, unknown>;
+      const files = [log, ...(Array.isArray(logs) ? logs : [])].filter((l): l is string => typeof l === "string");
+      const extra = Object.keys(rest).length ? `\nDetails: ${JSON.stringify(rest)}` : "";
+      const logText = files.length ? `\nLog tail:\n${tail(read(files[files.length - 1]!), LOG_TAIL_LINES)}` : "";
+      return `Gate ${r.name}: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}${extra}${logText}`;
+    });
+  writeFileSync(path, parts.join("\n\n") + "\n");
+}
+
+/** Why the previous implement attempt was sent back: the last REWORK verdict and the last gate failure, if still current. */
+function reworkFeedback(root: string, task: TaskState): string {
+  const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
+  const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
+  const dir = runsDir(root, task.id);
+  const verdict = lastVerify?.outcome === "rework" ? read(join(dir, "verdict.md")) : "";
+  const gates = lastGates && lastGates.outcome !== "pass" ? read(join(dir, GATES_FAILURE)) : "";
+  return (
+    block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) +
+    block("Gate failure on the previous attempt (make the gates pass)", gates)
+  );
 }
 
 function role(stage: Stage, task: TaskState, config: Config) {
@@ -241,9 +283,9 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const tasksMd = `openspec/changes/${id}/tasks.md`;
       const zone = task.zone?.length ? task.zone : small ? ["**"] : [];
       if (!zone.length) throw new DevflowError("no_zone", `Task ${id} has no impact zone; approve a design or set one with "devflow zone".`);
-      const ctx = small
-        ? ""
-        : changeContext(root, id, () => true) + block("Impact zone", zone.map((z) => `- ${z}`).join("\n"));
+      const ctx =
+        (small ? "" : changeContext(root, id, () => true) + block("Impact zone", zone.map((z) => `- ${z}`).join("\n"))) +
+        reworkFeedback(root, task);
       const write = small ? zone : [...zone, tasksMd];
       const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], { bash: [config.test.command] });
       task = record(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config, io);
