@@ -44,7 +44,13 @@ export function gateConfig(root: string, base: string | undefined, workingConfig
   const info = repoInfo(root);
   if (!info || !base) return { config: workingConfig, source: "working_tree" };
   const r = git(root, ["show", `${base}:${info.prefix}.devflow/config.json`], { allowFail: true });
-  if (r.code !== 0) return { config: workingConfig, source: "working_tree" };
+  if (r.code !== 0) {
+    // No committed config at the base: the working copy is only trusted if it is not part of the change.
+    if (changeSet(root, base).includes(".devflow/config.json")) {
+      throw new DevflowError("untrusted_config", ".devflow/config.json is not committed at the base and was changed; commit it or reset it.");
+    }
+    return { config: workingConfig, source: "working_tree" };
+  }
   try {
     return { config: parseConfig(JSON.parse(r.stdout)), source: "base" };
   } catch {

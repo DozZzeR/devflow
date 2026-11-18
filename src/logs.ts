@@ -76,6 +76,7 @@ export function openLog(root: string, role: string, task?: string): LogFile {
   return {
     path,
     write(chunk: string, stream: "stdout" | "stderr" = "stdout") {
+      if (closed) return;
       pending[stream] += chunk;
       const lastNewline = pending[stream].lastIndexOf("\n");
       if (lastNewline >= 0) {

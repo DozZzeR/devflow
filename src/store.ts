@@ -101,7 +101,10 @@ export function listTaskIds(root: string): string[] {
 /** Schema 1 → 2 in memory: no base, no zone, zero counters. Other versions pass through unchanged. */
 export function upgrade(raw: unknown): unknown {
   if (raw && typeof raw === "object" && (raw as { schema?: unknown }).schema === 1) {
-    return { ...(raw as object), schema: 2, counters: { ...COUNTERS_ZERO } };
+    const { base: _b, zone: _z, ...rest } = raw as Record<string, unknown>;
+    void _b;
+    void _z;
+    return { ...rest, schema: 2, counters: { ...COUNTERS_ZERO } };
   }
   return raw;
 }

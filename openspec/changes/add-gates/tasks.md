@@ -25,7 +25,9 @@
 
 - [x] 5.1 README (gates, base/zone, test settings, test-command environment), SPEC §4.4 (no draft.patch/reset) and §7 status, TODO (ignored-path writes, per-file rollback); verify documented commands
 - [x] 5.2 `npx openspec validate add-gates --strict`, `npx openspec validate --specs --strict` and `npm test` pass
-- [ ] 5.3 Independent verify by Codex via `devflow exec-role verify`; record verdicts in the `docs/TODO.md` run journal
+- [x] 5.3 Independent verify by Codex via `devflow exec-role verify`; record verdicts in the `docs/TODO.md` run journal
+  - Round 1: REWORK, 10 findings. Fixed: gates use the config committed at the base; overlay never follows worktree links, deletions first; operational errors → blocked; partial worktree add cleaned; setup re-run on any changed input; all attempts reset on escalation; zone rejects any `..`; timeout bounded.
+  - Round 2 (limit): REWORK; 1 resolved, 1 accepted (Windows tree kill), rest deeper hardening. Cheap ones fixed: stale-state check before recording, per-gate results in history, untrusted uncommitted config → blocked, more list markers, schema-1 upgrade drops base/zone, output-handler errors contained, timeout cap in the spec. Remaining items moved to docs/TODO.md and handed to the human decision.
 
 ## Workflow follow-up
 

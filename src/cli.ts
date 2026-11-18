@@ -332,10 +332,16 @@ export async function run(argv: string[], io: Io): Promise<number> {
           const { results, skipped } = await runAllGates(ctx);
           out = { id: task.id, results, skipped };
           if (nextStage(task, config).stage === "gates") {
+            // Refuse to record over state that changed while the gates were running.
+            const current = loadTask(root, task.id);
+            if (current.updatedAt !== task.updatedAt) {
+              throw new DevflowError("state_changed", `Task ${task.id} changed while gates were running; results not recorded.`);
+            }
             const last = results[results.length - 1]!;
+            const summary = results.map((r) => `${r.name}:${r.outcome}${r.reason ? `(${r.reason})` : ""}`).join(", ");
             const event = last.outcome === "pass"
-              ? { kind: "gates" as const, outcome: "pass" as const }
-              : { kind: "gates" as const, outcome: last.outcome, gate: last.name, ...(last.reason ? { reason: last.reason } : {}) };
+              ? { kind: "gates" as const, outcome: "pass" as const, results: summary }
+              : { kind: "gates" as const, outcome: last.outcome, gate: last.name, results: summary, ...(last.reason ? { reason: last.reason } : {}) };
             const next = transition(task, event, config, io.now());
             saveTask(root, next);
             recorded = true;

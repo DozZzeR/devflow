@@ -33,6 +33,7 @@ const HistoryEntrySchema = z.object({
   kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone"]),
   stage: z.enum(STAGES).optional(),
   gate: z.string().optional(),
+  results: z.string().optional(),
   outcome: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -73,7 +74,7 @@ export type GateOutcome = "pass" | "fail" | "blocked";
 
 export type Event =
   | { kind: "complete"; stage: Stage; outcome: string; override?: string }
-  | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string }
+  | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string }
   | { kind: "approve" }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
@@ -282,6 +283,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
         outcome: event.outcome,
         ...(event.gate ? { gate: event.gate } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.results ? { results: event.results } : {}),
       });
       applyGates(event.outcome, event.gate, event.reason);
       if (t.status !== "HUMAN") delete t.humanReason;

@@ -181,6 +181,10 @@ function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: She
       settled = true;
       clearTimeout(timer);
       if (teardown) clearTimeout(teardown);
+      if (outputError) {
+        reject(new DevflowError("output_error", `Could not record process output: ${outputError.message}`));
+        return;
+      }
       const result: LaunchResult = { exitCode, timedOut, durationMs: Date.now() - started };
       if (killFailed) result.killFailed = true;
       resolvePromise(result);
@@ -201,8 +205,18 @@ function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: She
       }, opts.teardownMs ?? 5_000);
     }, opts.timeoutMs);
 
-    child.stdout.setEncoding("utf8").on("data", (c: string) => opts.onOutput(c, "stdout"));
-    child.stderr.setEncoding("utf8").on("data", (c: string) => opts.onOutput(c, "stderr"));
+    // A failing output handler (for example a log write error) must not escape the promise.
+    let outputError: Error | undefined;
+    const emit = (c: string, stream: "stdout" | "stderr") => {
+      if (outputError) return;
+      try {
+        opts.onOutput(c, stream);
+      } catch (e) {
+        outputError = e as Error;
+      }
+    };
+    child.stdout.setEncoding("utf8").on("data", (c: string) => emit(c, "stdout"));
+    child.stderr.setEncoding("utf8").on("data", (c: string) => emit(c, "stderr"));
     child.stdin.on("error", () => {
       /* child may exit before reading stdin */
     });

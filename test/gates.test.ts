@@ -138,3 +138,17 @@ test("operational errors become blocked results instead of exceptions", async ()
   const z = await runGate("zone", ctx(root, "0000000000000000000000000000000000000000", { zone: ["**"] }));
   assert.equal(z.outcome, "blocked");
 });
+
+test("an uncommitted config that the change modified is not trusted", async () => {
+  const { root, base } = gitProject();
+  sh(root, "git", ["rm", "-q", "--cached", ".devflow/config.json"]);
+  sh(root, "git", ["commit", "-q", "-m", "untrack config"]);
+  const newBase = sh(root, "git", ["rev-parse", "HEAD"]).trim();
+  const { gateConfig } = await import("../src/gates.js");
+  assert.throws(() => gateConfig(root, newBase, loadConfig(root)), (e: unknown) => e instanceof DevflowError && e.reason === "untrusted_config");
+  void base;
+});
+
+test("impact zone accepts +, ordered and nested list markers", () => {
+  assert.deepEqual(parseImpactZone("## Impact zone\n+ a/**\n1. b/**\n2) c/**\n"), ["a/**", "b/**", "c/**"]);
+});

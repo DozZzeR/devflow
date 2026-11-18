@@ -19,7 +19,7 @@ export function parseImpactZone(markdown: string): string[] {
   const globs: string[] = [];
   for (const line of lines.slice(start + 1)) {
     if (/^#{1,6}\s/.test(line)) break;
-    const m = /^\s*[-*]\s+(.+?)\s*$/.exec(line);
+    const m = /^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$/.exec(line);
     if (m) globs.push(m[1]!.replace(/^`|`$/g, "").trim());
   }
   if (!globs.length) throw new DevflowError("no_zone_section", "The \"## Impact zone\" section has no list items.");
