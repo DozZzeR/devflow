@@ -25,7 +25,9 @@
 - [x] 5.2 Real runs on a scratch repo: one small and one medium task end to end with real CLIs; record in the `docs/TODO.md` run journal
   - Outcome 2026-11-18 (docs/sandbox-calc): small `fix-sub` DONE in 20 s; medium `add-muldiv` went explore → design → reject → redesign → approve → implement → gates → verify REWORK → implement → gates → verify PASS. Real runs exposed three prompt/check issues, all fixed: design Outputs listed only three files; revision freshness rule; verify REWORK on low findings and confusion about the intentionally missing design.md.
 - [x] 5.3 `npx openspec validate add-stage-run --strict`, `npx openspec validate --specs --strict`, `npm test`
-- [ ] 5.4 Independent verify by Codex (two rounds max, round 2 high-only and regressions); record in the journal
+- [x] 5.4 Independent verify by Codex (two rounds max, round 2 high-only and regressions); record in the journal
+  - Round 1: REWORK, 11. Fixed: gates re-check the snapshot after running (change during the run is blocked); verify copy detached from git; launch errors are failed stages; round-2 rule enforced with custom prompts; approve validates the id first.
+  - Round 2 (limit, high-only): 1 accepted (test-command environment), 3 open. Cheap ones fixed: verdict copied only as a regular file; approve refuses a run-designed task whose plan folder disappeared. Remaining (gates on the live tree vs a snapshot copy; codex verifier command freedom; plan-file links) are in docs/TODO.md for the human decision.
 
 ## Workflow follow-up
 

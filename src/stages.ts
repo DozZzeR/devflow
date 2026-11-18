@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.js";
 import { DEVFLOW_DIR } from "./config.js";
@@ -229,7 +229,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
         return report("fail", task, check.reason, check.details);
       }
       task = setZone(root, task, check.zone!, io);
-      task = record(root, task, { kind: "complete", stage, outcome: "ok" }, config, io);
+      task = record(root, task, { kind: "complete", stage, outcome: "ok", byRun: true }, config, io);
       return report("ok", task);
     }
 
@@ -313,9 +313,12 @@ async function runVerify(
         bash: [config.test.command],
       });
       const produced = join(wt.projectDir, ".devflow-verdict.md");
-      if (existsSync(produced)) {
+      // Copy only a regular file: a link planted by the verifier must not make devflow read outside the copy.
+      if (existsSync(produced) && lstatSync(produced).isFile()) {
         mkdirSync(dirname(verdictPath), { recursive: true });
         copyFileSync(produced, verdictPath);
+      } else if (existsSync(produced)) {
+        failure = "unsafe_verdict";
       }
       if (!r.ok) failure = "verify_run_failed";
     }

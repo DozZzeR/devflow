@@ -216,6 +216,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
           validateId(id);
           loadTask(root, id);
           // With a plan folder, approval re-checks the design and binds the plan and its zone.
+          const designedByRun = loadTask(root, id).history.some((h) => h.kind === "complete" && h.stage === "design" && h.outcome === "ok" && h.results === "run");
+          if (designedByRun && !changeFiles(root, id).length) {
+            throw new DevflowError("plan_missing", `The plan folder openspec/changes/${id}/ is missing; run design again (approve --reject) instead of approving.`);
+          }
           if (changeFiles(root, id).length) {
             const check = await checkDesign(root, id, config);
             if (!check.ok) throw new DevflowError("design_invalid", `Plan for ${id} does not pass the design checks: ${check.reason}`, check.details);

@@ -76,7 +76,7 @@ export type TaskState = z.infer<typeof TaskStateSchema>;
 export type GateOutcome = "pass" | "fail" | "blocked";
 
 export type Event =
-  | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string }
+  | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string; byRun?: boolean }
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
   | { kind: "approve"; planDigest?: string; zone?: string[] }
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
@@ -256,7 +256,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       } else if (stage === "gates" && event.override) {
         t.history.push({ at: now, kind: "override", stage, outcome, reason: event.override });
       } else {
-        t.history.push({ at: now, kind: "complete", stage, outcome });
+        t.history.push({ at: now, kind: "complete", stage, outcome, ...(event.byRun ? { results: "run" } : {}) });
       }
       switch (stage) {
         case "explore":
