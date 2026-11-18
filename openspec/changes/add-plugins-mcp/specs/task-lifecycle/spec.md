@@ -37,7 +37,7 @@ Without delegation a task SHALL stop for human approval after design. `devflow d
 
 ### Requirement: Delegated review
 
-A delegated review SHALL judge an immutable copy of the plan (taken with its digest before the review) in an isolated directory, on a `claude` or `codex` runner only. The last verdict line of its final answer decides: `APPROVE` approves that digest, `REJECT: <reasons>` rejects with those reasons; no verdict line stops for a human with `unreadable_review`. The verdict is applied only if the task is still awaiting approval, delegation is still active and the plan digest is unchanged; otherwise it is discarded with `review_stale`.
+A delegated review SHALL judge an immutable copy of the plan (taken with its digest before the review) in an isolated directory, on a `claude` or `codex` runner only. The last verdict line of its final answer decides: `APPROVE` approves that digest, `REJECT: <reasons>` rejects with those reasons; no verdict line stops for a human with `unreadable_review`.
 
 #### Scenario: Delegated approval
 
@@ -48,3 +48,12 @@ A delegated review SHALL judge an immutable copy of the plan (taken with its dig
 
 - **WHEN** the plan changes while the reviewer runs
 - **THEN** the verdict is discarded with `review_stale` and the task still awaits approval
+
+### Requirement: Stale review
+
+A delegated review verdict SHALL be applied only if, when it is recorded, the task is still awaiting approval, delegation is still active and the plan digest equals the reviewed copy's; otherwise it is discarded with `review_stale`.
+
+#### Scenario: Delegation revoked during review
+
+- **WHEN** the user revokes delegation while the reviewer runs
+- **THEN** the verdict is discarded with `review_stale` and the task waits for the human
