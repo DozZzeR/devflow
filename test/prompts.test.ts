@@ -33,6 +33,22 @@ test("verify round 2 adds the previous verdict and the narrowing rule; round 1 d
   assert.match(r1, /intentionally absent/);
 });
 
+test("verify prompt defines the severity rubric in every round", () => {
+  const defs = [
+    "high = an acceptance criterion is not met",
+    "medium = a likely defect with a workaround",
+    "low = style, tests or hardening outside the threat model",
+    "REWORK only for at least one high or medium finding",
+  ];
+  const r1 = composePrompt(TEMPLATES.verify, { ...base, round: 1 });
+  const r2 = composePrompt(TEMPLATES.verify, { ...base, round: 2, previousVerdict: "OLD" });
+  for (const d of defs) {
+    assert.ok(r1.includes(d), `round 1 lacks: ${d}`);
+    assert.ok(r2.includes(d), `round 2 lacks: ${d}`);
+  }
+  assert.equal(r2.split("ONLY high-severity findings and regressions").length - 1, 1);
+});
+
 test("project override replaces a template; unknown placeholders are rejected", () => {
   const root = tempDir();
   initProject(root);

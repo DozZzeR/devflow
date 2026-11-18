@@ -12,6 +12,7 @@ import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
 import { loadTask, saveTask } from "./store.js";
 import { parseBlocked, parsePlanConflict, runDelegatedReview } from "./review.js";
+import { verificationContext } from "./verify-context.js";
 
 export interface StageIo {
   now: () => string;
@@ -376,6 +377,7 @@ async function runVerify(
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
   const changes = changeSet(root, task.base!);
   const ctx =
+    block("Threat model and verification context", verificationContext(root, task.base!, changes)) +
     deltas +
     block(`openspec/changes/${id}/tasks.md`, read(join(folder, "tasks.md"))) +
     block("Test plan (from the design)", section(read(join(folder, "design.md")), "Test plan")) +

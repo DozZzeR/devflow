@@ -39050,9 +39050,9 @@ var init_mcp2 = __esm({
 
 // src/cli.ts
 init_config();
-import { readFileSync as readFileSync15 } from "node:fs";
+import { readFileSync as readFileSync16 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { dirname as dirname8, join as join17 } from "node:path";
+import { dirname as dirname8, join as join18 } from "node:path";
 
 // src/doctor.ts
 import { readFileSync as readFileSync6 } from "node:fs";
@@ -40157,6 +40157,7 @@ Outputs: {{outputs}}
 Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files and run: {{testCommand}}
 For every requirement decide MET, PARTIAL or NOT MET with file:line evidence. Look for tests that would still pass if the code were wrong.
 design.md and the .devflow/ folder are intentionally absent from this copy (you judge the result, not the author's reasoning); do not report their absence or their deletion in git status.
+Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.
 Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
 Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then numbered findings (severity high/medium/low, file:line, concrete fix). REWORK needs at least one concrete fix. No praise.
@@ -40277,8 +40278,8 @@ init_background();
 // src/stages.ts
 init_config();
 init_errors3();
-import { copyFileSync as copyFileSync2, existsSync as existsSync12, lstatSync as lstatSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
-import { dirname as dirname6, join as join15 } from "node:path";
+import { copyFileSync as copyFileSync2, existsSync as existsSync13, lstatSync as lstatSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { dirname as dirname6, join as join16 } from "node:path";
 init_lifecycle();
 init_store();
 
@@ -40417,9 +40418,86 @@ ${plan}`;
   return { stage: "review", outcome: "approve", next: nextStage(t, config2) };
 }
 
+// src/verify-context.ts
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "node:fs";
+import { join as join15 } from "node:path";
+var YAML_PATH = "openspec/config.yaml";
+var FILE_PATH = ".devflow/context.md";
+function foldLines(lines) {
+  let result = "";
+  let previous;
+  let blankLines = 0;
+  for (const line of lines) {
+    if (!line) {
+      blankLines++;
+      continue;
+    }
+    if (previous !== void 0) {
+      const preserveBreaks = /^[ \t]/.test(previous) || /^[ \t]/.test(line);
+      result += preserveBreaks ? "\n".repeat(blankLines + 1) : blankLines ? "\n".repeat(blankLines) : " ";
+    }
+    result += line;
+    previous = line;
+    blankLines = 0;
+  }
+  return result;
+}
+function parseContextKey(yaml) {
+  const lines = yaml.split(/\r\n?|\n/);
+  const i = lines.findIndex((line) => /^context:([ \t]|$)/.test(line));
+  if (i < 0) return "";
+  const header = lines[i].slice("context:".length).trimStart();
+  if (header.startsWith('"') || header.startsWith("'")) {
+    const quoted = /^(?:"([^"\\]*)"|'([^']*)')(?:[ \t]+#.*)?[ \t]*$/.exec(header);
+    return (quoted?.[1] ?? quoted?.[2] ?? "").trim();
+  }
+  const value = header.replace(/(^|[ \t]+)#.*$/, "").trim();
+  if (/^[|>][-+]?$/.test(value)) {
+    const body = [];
+    let indentation;
+    for (const line of lines.slice(i + 1)) {
+      if (line && !line.startsWith(" ")) break;
+      if (/[^ ]/.test(line)) {
+        indentation ??= /^ */.exec(line)[0];
+        if (!line.startsWith(indentation)) {
+          if (line.trimStart().startsWith("#")) break;
+          return "";
+        }
+      }
+      body.push(line);
+    }
+    if (indentation === void 0) return "";
+    const indent = indentation.length;
+    const content = body.map((line) => line.slice(indent));
+    return (value.startsWith(">") ? foldLines(content) : content.join("\n")).trim();
+  }
+  if (/^[&*![\]{}|>%@`]/.test(value)) return "";
+  const nextContent = lines.slice(i + 1).find((line) => !/^[ \t]*(?:#|$)/.test(line));
+  return nextContent && /^[ \t]/.test(nextContent) ? "" : value;
+}
+function readSource(root, base, changes, path) {
+  try {
+    if (changes.includes(path)) {
+      const info = repoInfo(root);
+      if (!info) return "";
+      const r = git(root, ["show", `${base}:${info.prefix}${path}`], { allowFail: true });
+      return r.code === 0 ? r.stdout : "";
+    }
+    const full = join15(root, path);
+    return existsSync12(full) ? readFileSync13(full, "utf8") : "";
+  } catch {
+    return "";
+  }
+}
+function verificationContext(root, base, changes) {
+  const yaml = parseContextKey(readSource(root, base, changes, YAML_PATH));
+  if (yaml) return yaml;
+  return readSource(root, base, changes, FILE_PATH).trim();
+}
+
 // src/stages.ts
-var runsDir2 = (root, id) => join15(root, DEVFLOW_DIR, "runs", id);
-var read = (p) => existsSync12(p) ? readFileSync13(p, "utf8") : "";
+var runsDir2 = (root, id) => join16(root, DEVFLOW_DIR, "runs", id);
+var read = (p) => existsSync13(p) ? readFileSync14(p, "utf8") : "";
 function record2(root, task, event, config2, io) {
   const current = loadTask(root, task.id);
   if (current.updatedAt !== task.updatedAt) {
@@ -40438,14 +40516,14 @@ function setZone(root, task, zone, io) {
   return t;
 }
 function livingSpecs(root) {
-  const dir = join15(root, "openspec", "specs");
-  if (!existsSync12(dir)) return "";
+  const dir = join16(root, "openspec", "specs");
+  if (!existsSync13(dir)) return "";
   const files = changeFiles(root, "../specs").map((f) => `- openspec/specs/${f}`);
   return files.join("\n");
 }
 function changeContext(root, id, include) {
   const dir = changeFolder(root, id);
-  return changeFiles(root, id).filter(include).map((f) => block(`openspec/changes/${id}/${f}`, read(join15(dir, f)))).join("");
+  return changeFiles(root, id).filter(include).map((f) => block(`openspec/changes/${id}/${f}`, read(join16(dir, f)))).join("");
 }
 function verdictOf(text2) {
   const first = text2.replace(/^﻿/, "").split(/\r?\n/).find((l) => l.trim())?.trim().toUpperCase() ?? "";
@@ -40468,8 +40546,8 @@ function verdictFromAnswer(log) {
 }
 function lastSavedVerdict(dir, upTo) {
   for (let n = upTo; n >= 1; n--) {
-    const p = join15(dir, `verdict-round${n}.md`);
-    if (existsSync12(p)) return read(p);
+    const p = join16(dir, `verdict-round${n}.md`);
+    if (existsSync13(p)) return read(p);
   }
   return void 0;
 }
@@ -40504,7 +40582,7 @@ function tail2(text2, lines) {
   return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
 }
 function saveGatesFailure(root, id, results) {
-  const path = join15(runsDir2(root, id), GATES_FAILURE);
+  const path = join16(runsDir2(root, id), GATES_FAILURE);
   if (!results) {
     rmSync6(path, { force: true });
     return;
@@ -40525,8 +40603,8 @@ function reworkFeedback(root, task) {
   const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
   const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
   const dir = runsDir2(root, task.id);
-  const verdict = lastVerify?.outcome === "rework" ? read(join15(dir, "verdict.md")) : "";
-  const gates = lastGates && lastGates.outcome !== "pass" ? read(join15(dir, GATES_FAILURE)) : "";
+  const verdict = lastVerify?.outcome === "rework" ? read(join16(dir, "verdict.md")) : "";
+  const gates = lastGates && lastGates.outcome !== "pass" ? read(join16(dir, GATES_FAILURE)) : "";
   return block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates);
 }
 function role(stage, task, config2) {
@@ -40628,7 +40706,7 @@ async function runNextStage(root, workingConfig, id, io) {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
       const rejections = task.history.filter((h) => h.kind === "reject").map((h) => `- ${h.reason ?? ""}`).join("\n");
-      const ctx = block("Exploration notes", read(join15(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
+      const ctx = block("Exploration notes", read(join16(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
       const revision = rejections.length > 0;
       const filesBefore = revision ? planDigest(root, id) : "";
       const required2 = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
@@ -40687,19 +40765,19 @@ async function runVerify(root, task, workingConfig, io, report) {
     return { stage: "invalidate", outcome: "snapshot_changed", next: nextStage(t2, workingConfig) };
   }
   const dir = runsDir2(root, id);
-  const verdictPath = join15(dir, "verdict.md");
+  const verdictPath = join16(dir, "verdict.md");
   const round = task.history.filter((h) => h.kind === "complete" && h.stage === "verify").length + 1;
   let previous;
-  if (existsSync12(verdictPath)) {
+  if (existsSync13(verdictPath)) {
     previous = read(verdictPath);
-    renameSync2(verdictPath, join15(dir, `verdict-round${round - 1}.md`));
+    renameSync2(verdictPath, join16(dir, `verdict-round${round - 1}.md`));
   } else {
     previous = lastSavedVerdict(dir, round - 1);
   }
   const folder = changeFolder(root, id);
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
   const changes = changeSet(root, task.base);
-  const ctx = deltas + block(`openspec/changes/${id}/tasks.md`, read(join15(folder, "tasks.md"))) + block("Test plan (from the design)", section(read(join15(folder, "design.md")), "Test plan")) + block("Changed files", changes.map((p) => `- ${p}`).join("\n")) + block("Gate results", gatesSummary(task));
+  const ctx = block("Threat model and verification context", verificationContext(root, task.base, changes)) + deltas + block(`openspec/changes/${id}/tasks.md`, read(join16(folder, "tasks.md"))) + block("Test plan (from the design)", section(read(join16(folder, "design.md")), "Test plan")) + block("Changed files", changes.map((p) => `- ${p}`).join("\n")) + block("Gate results", gatesSummary(task));
   let wt;
   let r;
   let failure2;
@@ -40707,8 +40785,8 @@ async function runVerify(root, task, workingConfig, io, report) {
     wt = addWorktree(root, task.base);
     detachWorktreeGit(wt.path);
     applyPaths(root, wt.projectDir, changes);
-    rmSync6(join15(wt.projectDir, "openspec", "changes", id, "design.md"), { force: true });
-    rmSync6(join15(wt.projectDir, DEVFLOW_DIR), { recursive: true, force: true });
+    rmSync6(join16(wt.projectDir, "openspec", "changes", id, "design.md"), { force: true });
+    rmSync6(join16(wt.projectDir, DEVFLOW_DIR), { recursive: true, force: true });
     if (config2.test.setup) {
       const s = await runCommand({ root, task, config: config2, parentEnv: io.env }, config2.test.setup, wt.projectDir, "verify_setup");
       if (s.exitCode !== 0) failure2 = "verify_setup_failed";
@@ -40720,15 +40798,15 @@ async function runVerify(root, task, workingConfig, io, report) {
         ...previous ? { previousVerdict: previous } : {},
         bash: [config2.test.command]
       });
-      const produced = join15(wt.projectDir, ".devflow-verdict.md");
-      if (existsSync12(produced) && lstatSync6(produced).isFile()) {
+      const produced = join16(wt.projectDir, ".devflow-verdict.md");
+      if (existsSync13(produced) && lstatSync6(produced).isFile()) {
         mkdirSync6(dirname6(verdictPath), { recursive: true });
         copyFileSync2(produced, verdictPath);
-      } else if (existsSync12(produced)) {
+      } else if (existsSync13(produced)) {
         failure2 = "unsafe_verdict";
       }
       if (!r.ok) {
-        const answered = !existsSync12(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log ? verdictFromAnswer(read(r.log)) : void 0;
+        const answered = !existsSync13(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log ? verdictFromAnswer(read(r.log)) : void 0;
         if (answered) {
           mkdirSync6(dirname6(verdictPath), { recursive: true });
           writeFileSync7(verdictPath, answered);
@@ -40776,8 +40854,8 @@ init_jobs();
 // src/roles.ts
 init_config();
 init_errors3();
-import { readFileSync as readFileSync14 } from "node:fs";
-import { join as join16 } from "node:path";
+import { readFileSync as readFileSync15 } from "node:fs";
+import { join as join17 } from "node:path";
 init_store();
 var RANKING = [
   { runner: "claude", model: "fable" },
@@ -40840,13 +40918,13 @@ async function candidates(root, config2, opts = {}) {
   return out;
 }
 function readRaw(root) {
-  return JSON.parse(readFileSync14(join16(root, DEVFLOW_DIR, CONFIG_FILE), "utf8"));
+  return JSON.parse(readFileSync15(join17(root, DEVFLOW_DIR, CONFIG_FILE), "utf8"));
 }
 function writeRoles(root, roles) {
   const raw = readRaw(root);
   raw.roles = { ...raw.roles, ...roles };
   const config2 = parseConfig(raw);
-  writeFileAtomic(join16(root, DEVFLOW_DIR, CONFIG_FILE), JSON.stringify(raw, null, 2) + "\n");
+  writeFileAtomic(join17(root, DEVFLOW_DIR, CONFIG_FILE), JSON.stringify(raw, null, 2) + "\n");
   return config2;
 }
 function applyProposal(root, p) {
@@ -40937,7 +41015,7 @@ function asStage(value) {
 function version2() {
   if (true) return "0.1.0";
   const here = dirname8(fileURLToPath2(import.meta.url));
-  const pkg = JSON.parse(readFileSync15(join17(here, "..", "..", "package.json"), "utf8"));
+  const pkg = JSON.parse(readFileSync16(join18(here, "..", "..", "package.json"), "utf8"));
   return pkg.version;
 }
 function project(io) {
@@ -41126,7 +41204,7 @@ async function run(argv, io) {
         if (task !== void 0) validateId(task);
         let prompt;
         try {
-          prompt = readFileSync15(promptFile, "utf8");
+          prompt = readFileSync16(promptFile, "utf8");
         } catch {
           throw new DevflowError("no_prompt", `Cannot read prompt file ${promptFile}.`);
         }
@@ -41267,7 +41345,7 @@ async function run(argv, io) {
         if (!path) throw new DevflowError("no_log", `Task ${id} has no run log yet.`);
         let offset = 0;
         const dump = () => {
-          const text2 = readFileSync15(path, "utf8");
+          const text2 = readFileSync16(path, "utf8");
           if (text2.length > offset) io.out(text2.slice(offset).replace(/\n$/, ""));
           offset = text2.length;
         };

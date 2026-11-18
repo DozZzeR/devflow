@@ -59,7 +59,28 @@ test("medium task: explore + design, stop for approval; approve binds plan; then
   const vp = readFileSync(join(prompts, verifyPrompt!), "utf8");
   assert.match(vp, /tests\/mul\.test\.js checks mul/);
   assert.doesNotMatch(vp, /SECRET-DESIGN-REASONING/);
+  assert.doesNotMatch(vp, /Threat model and verification context/);
   assert.match(readFileSync(join(root, "openspec", "changes", "t1", "tasks.md"), "utf8"), /- \[x\] 1\.1/);
+});
+
+test("only the verify prompt receives the committed threat model", () => {
+  const { root, devflow, state, prompts } = setup();
+  write(root, ".devflow/context.md", "THREAT-MODEL-MARKER\n");
+  sh(root, "git", ["add", "-A"]);
+  sh(root, "git", ["commit", "-q", "-m", "context"]);
+  assert.equal(devflow("start", "t1c", "Add mul").code, 0);
+  devflow("run", "t1c");
+  devflow("approve", "t1c");
+  devflow("run", "t1c");
+  assert.equal(state("t1c").status, "DONE");
+  const text = (stage: string) => {
+    const f = readdirSync(prompts).find((n) => n.startsWith(stage));
+    assert.ok(f, `no ${stage} prompt`);
+    return readFileSync(join(prompts, f!), "utf8");
+  };
+  assert.match(text("VERIFY"), /## Threat model and verification context\s+THREAT-MODEL-MARKER/);
+  assert.doesNotMatch(text("EXPLORE"), /THREAT-MODEL-MARKER/);
+  assert.doesNotMatch(text("DESIGN"), /THREAT-MODEL-MARKER/);
 });
 
 test("--once runs exactly one stage", () => {
