@@ -149,7 +149,7 @@ API-key variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` for `claude`; `OP
 
 ### Requirement: Diagnostics
 
-`devflow doctor` SHALL report, for `claude` and `codex`, whether the CLI is on PATH, its version and its login status, and which configured roles depend on a missing CLI. `devflow doctor --probe` SHALL additionally make one minimal read-only real call for every distinct (runner, model) pair used by the configuration, including `command` roles, and report each pair with success and duration.
+`devflow doctor` SHALL report, for `claude` and `codex`, whether the CLI is on PATH, its version and its login status, and which configured roles depend on a missing CLI. `devflow doctor --probe` SHALL additionally make one minimal read-only real call for every distinct (`claude` or `codex`, model) pair used by the configuration; `command` roles are reported as not probed, since devflow cannot make an arbitrary CLI read-only, and report each pair with success and duration.
 
 #### Scenario: Codex-only machine
 

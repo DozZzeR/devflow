@@ -11,7 +11,7 @@ The core can say which stage and role come next, but nothing can execute a role 
 - Write scope per run: enforced for `claude` (tool permissions), sandbox-level for `codex`, advisory for `command`; the result states which.
 - Windows launcher for `.cmd`/`.bat` shims that never passes prompt text through the shell.
 - `devflow exec-role <role> --prompt-file <f> [--write <glob>]... [--expect <path>]... [--allow-bash <cmd>]... [--timeout <s>] [--task <id>]`: low-level command to run one role once. Stage prompts and `devflow run` come with the gates/OpenSpec-adapter change.
-- `devflow doctor [--probe]`: which CLIs are installed, versions, login status; `--probe` makes one tiny read-only real call per distinct runner/model pair in the config.
+- `devflow doctor [--probe]`: which CLIs are installed, versions, login status; `--probe` makes one tiny read-only real call per distinct claude/codex model in the config.
 - `devflow init` detects installed CLIs and writes roles accordingly (both, Codex-only, Claude-only). Default Codex model updated from `gpt-5-codex` to the current default.
 
 ## Capabilities

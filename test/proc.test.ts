@@ -10,7 +10,7 @@ import { tempDir } from "./helpers.js";
 
 test("child env is an allowlist: secrets dropped, system vars and passed names kept", () => {
   const env = buildChildEnv(
-    { PATH: "/bin", USERPROFILE: "/u", MEMPALACE_TOKEN: "x", GITHUB_TOKEN: "y", ANTHROPIC_API_KEY: "k", LC_ALL: "C", HTTPS_PROXY: "p" },
+    { PATH: "/bin", USERPROFILE: "/u", MEMPALACE_TOKEN: "x", GITHUB_TOKEN: "y", ANTHROPIC_API_KEY: "k", LC_ALL: "C", HTTPS_PROXY: "p", XDG_TOKEN: "t", LC_SECRET: "s" },
     ["HTTPS_PROXY"],
   );
   assert.deepEqual(Object.keys(env).sort(), ["HTTPS_PROXY", "LC_ALL", "PATH", "USERPROFILE"]);

@@ -26,7 +26,10 @@
 
 - [x] 4.1 Update `README.md` (exec-role, doctor, init `--runners`) and `docs/SPEC.md` §5 with the stdin, Windows, hook and credential findings; verify documented commands run
 - [x] 4.2 Run `npx openspec validate add-runners --strict` and `npm test`; both pass
-- [ ] 4.3 Independent check by Codex: `devflow exec-role verify` over this change's code and specs, read-only; record verdict and resolve findings
+- [x] 4.3 Independent check by Codex: `devflow exec-role verify` over this change's code and specs, read-only; record verdict and resolve findings
+  - Run 1 (2026-11-18): HUMAN - codex could not read the repo because `--ignore-user-config` dropped trust and Windows sandbox settings; default flipped to false.
+  - Run 2: REWORK, 10 findings (timeout did not kill the tree inside codex's sandbox - test passed after 60 s; hook failed open on bad input; API keys via env.pass; interleaved redaction; path edge cases). Fixed with regression tests.
+  - Run 3 (limit reached): REWORK; 1 accepted limitation, rest deeper hardening. Cheap ones fixed (explicit env names, taskkill timeout, POSIX exec bit, no probes for `command` roles); the remainder is listed in design.md Risks and handed to the human decision.
 
 ## Workflow follow-up
 

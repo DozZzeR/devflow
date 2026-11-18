@@ -68,6 +68,7 @@ Core lifecycle, config and CLI exist (`openspec/specs/task-lifecycle`, `project-
 ## Risks / Trade-offs
 
 - [Known limitations after independent review, accepted for this change] Windows tree kill uses `taskkill /T` (absolute path, verified exit code, `child.kill` fallback, 5 s bounded teardown, `killFailed` reported) rather than a Job Object; inside restricted sandboxes `taskkill` can fail, which is now reported instead of waiting. Path checks resolve links in the nearest existing ancestor (hook) and refuse linked log directories, but are path-based, not handle-based, so a race that swaps a directory between check and use is not prevented. File-symlink tests are skipped on Windows without the symlink privilege.
+- [Open after verify round 2, deferred to the gates change or later] (a) `enforced` assumes Claude honours the injected hook; a user setting that disables all hooks would silently remove it, so the zone gate stays the guarantee; (b) dangling links in a write target and linked parents of expected outputs are not fully canonicalised; (c) short credential values (< 8 chars) and unrecognised doctor output are not masked; (d) relative executables in `command` templates resolve against devflow's cwd; (e) standalone log names carry a numeric suffix.
 
 - [Codex cannot enforce globs] → reported as `sandbox`; zone gate catches violations after the run.
 - [Model names drift] → defaults are data in config; `doctor --probe` reveals unknown models early.

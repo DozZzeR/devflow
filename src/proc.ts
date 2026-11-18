@@ -5,13 +5,15 @@ import { DevflowError } from "./errors.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
-/** Variables a CLI needs to start and find its own config; nothing secret. Prefix entries end with "*". */
+/** Variables a CLI needs to start and find its own config; nothing secret. Explicit names only. */
 export const ENV_ALLOWLIST = [
   "PATH", "PATHEXT", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
   "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
   "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR", "USERNAME", "USER",
-  "LOGNAME", "SHELL", "TERM", "LANG", "LC_*", "TZ", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
-  "OS", "XDG_*", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+  "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
+  "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+  "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+  "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
 ];
 
 export const API_KEY_VARS = {
@@ -43,7 +45,11 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
 
 /** Find an executable on PATH (with PATHEXT on Windows). Returns an absolute path or undefined. */
 export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const isFile = (p: string) => existsSync(p) && statSync(p).isFile();
+  const isFile = (p: string) => {
+    if (!existsSync(p)) return false;
+    const st = statSync(p);
+    return st.isFile() && (IS_WINDOWS || (st.mode & 0o111) !== 0);
+  };
   if (isAbsolute(name) || name.includes("/") || name.includes("\\")) return isFile(name) ? name : undefined;
   const dirs = (envGet(env, "PATH") ?? "").split(delimiter).filter(Boolean);
   const exts = IS_WINDOWS
@@ -108,6 +114,7 @@ export function killTree(pid: number): boolean {
       stdio: "ignore",
       env: { SystemRoot: systemRoot },
       windowsHide: true,
+      timeout: 5_000,
     });
     return r.status === 0;
   }

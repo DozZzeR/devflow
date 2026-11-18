@@ -78,6 +78,7 @@ export async function doctor(root: string, config: Config, probe: boolean, paren
 
   const pairs = new Map<string, [string, Role]>();
   for (const [name, r] of roles) {
+    if (r.runner === "command") continue; // no read-only isolation for arbitrary CLIs: not probed
     const key = `${r.runner}/${r.model}`;
     if (!pairs.has(key)) pairs.set(key, [name, r]);
   }
