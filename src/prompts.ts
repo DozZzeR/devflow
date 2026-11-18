@@ -82,6 +82,8 @@ Outputs: {{outputs}}
     `Goal: independently check the implemented change against its acceptance criteria. You did not plan or write it, and you are working in a disposable copy of the project: edits you make are discarded.
 Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files and run: {{testCommand}}
 For every requirement decide MET, PARTIAL or NOT MET with file:line evidence. Look for tests that would still pass if the code were wrong.
+design.md and the .devflow/ folder are intentionally absent from this copy (you judge the result, not the author's reasoning); do not report their absence or their deletion in git status.
+Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
 Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then numbered findings (severity high/medium/low, file:line, concrete fix). REWORK needs at least one concrete fix. No praise.
 

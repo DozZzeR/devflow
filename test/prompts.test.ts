@@ -29,6 +29,8 @@ test("verify round 2 adds the previous verdict and the narrowing rule; round 1 d
   const r2 = composePrompt(TEMPLATES.verify, { ...base, round: 2, previousVerdict: "OLD VERDICT" });
   assert.match(r2, /OLD VERDICT/);
   assert.match(r2, /ONLY high-severity findings and regressions/);
+  assert.match(r1, /REWORK only for at least one high or medium finding/);
+  assert.match(r1, /intentionally absent/);
 });
 
 test("project override replaces a template; unknown placeholders are rejected", () => {

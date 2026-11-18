@@ -176,12 +176,21 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
         block("Living specs (read as needed)", livingSpecs(root)) +
         block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) +
         (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "");
-      const r = await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`));
+      // A first design must produce every file fresh. A revision after a rejection may keep files that
+      // were fine, but must change the plan.
+      const revision = rejections.length > 0;
+      const digestBefore = revision ? planDigest(root, id) : "";
+      const required = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
+      const r = await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
       if (!r.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
         return report("fail", task, "run_failed", r);
       }
-      const check = await checkDesign(root, id, config, before);
+      if (revision && planDigest(root, id) === digestBefore) {
+        task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
+        return report("fail", task, "plan_unchanged");
+      }
+      const check = await checkDesign(root, id, config, revision ? undefined : before);
       if (!check.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
         return report("fail", task, check.reason, check.details);

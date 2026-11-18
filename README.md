@@ -2,7 +2,7 @@
 
 Role-separated, multi-model development workflow with deterministic gates. Plans are written in [OpenSpec](https://github.com/Fission-AI/OpenSpec) change format; stages run through official model CLIs (`claude -p`, `codex exec`) on your own subscriptions.
 
-Status: early. The core state machine, CLI, runners and gates exist; stage prompts with the OpenSpec adapter, the Claude Code / Codex plugins and the MCP server are next. Design: [docs/SPEC.md](docs/SPEC.md).
+Status: early. The core state machine, CLI, runners, gates and the `devflow run` loop exist; the Claude Code / Codex plugins and the MCP server are next. Design: [docs/SPEC.md](docs/SPEC.md).
 
 ## Build
 
@@ -60,3 +60,23 @@ Gates check a task's changes against its base commit, with no model involved. Ea
 Settings: `test.setup` (run in the worktree before the baseline and again if `test.setup_inputs` files changed, e.g. `npm ci`), `test.red_exit_codes` (e.g. `[1]` for pytest, so other codes become `blocked`), `test.timeout_seconds`. The test command runs in your shell with your environment: these are your own tests and no model sees that environment.
 
 Repeated gate failures or a zone violation escalate the task by one tier (complex goes to a human); `blocked` goes to a human without escalation.
+
+## Running a task
+
+```bash
+devflow start add-muldiv "Add mul and div; div throws on zero"   # medium by default
+devflow run add-muldiv            # explore -> design, stops for plan approval
+devflow approve add-muldiv        # re-checks the plan, binds it (digest) and sets the zone from design.md
+devflow approve add-muldiv --reject "Spec delta must be a real file"   # or send the plan back with feedback
+devflow run add-muldiv            # implement -> gates -> verify -> DONE (or back to implement on REWORK)
+devflow run add-muldiv --once     # one stage only
+devflow run add-muldiv --detach   # background; then:
+devflow log add-muldiv --follow
+```
+
+- The plan is an OpenSpec change folder `openspec/changes/<id>/` (proposal, design with `## Impact zone` and `## Test plan`, tasks, spec deltas), with or without OpenSpec installed. If the `openspec` CLI is available it validates the plan (`openspec.cli`: `auto` | `on` | `off`).
+- Each stage gets only its inputs; prompts are built in and can be replaced per project in `.devflow/prompts/<stage>.md`. The exact prompt of every run is saved next to its log.
+- Verify runs in a disposable worktree (base + change) without `design.md`, exploration notes or devflow state; its edits are discarded. A second round looks only at high-severity findings and regressions.
+- Evidence is bound to content: changing the plan after approval needs a new approval; changing code after the gates sends the task back to the gates (three such returns go to a human).
+- `complete gates ok` and `complete verify pass` by hand need `--override "<reason>"`.
+

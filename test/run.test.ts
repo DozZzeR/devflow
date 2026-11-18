@@ -115,6 +115,20 @@ test("a failing role stops the loop with fail", () => {
   assert.equal(lines(r.out)[0].outcome, "fail");
 });
 
+test("a rejected plan goes back to design; a revision that changes nothing fails", () => {
+  const { root, devflow, state, lines, prompts } = setup();
+  devflow("start", "t8", "Add mul");
+  devflow("run", "t8");
+  assert.equal(devflow("approve", "t8", "--reject", "Cover negative numbers").code, 0);
+  assert.equal(state("t8").status, "EXPLORED");
+  const r = lines(devflow("run", "t8", "--once").out);
+  assert.deepEqual([r[0].stage, r[0].outcome, r[0].reason], ["design", "fail", "plan_unchanged"]);
+  const designPrompts = readdirSync(prompts).filter((f) => f.startsWith("DESIGN"));
+  const last = readFileSync(join(prompts, designPrompts.sort().at(-1)!), "utf8");
+  assert.match(last, /Cover negative numbers/);
+  write(root, "openspec/changes/t8/tasks.md", "- [ ] 1.1 Changed by hand\n");
+});
+
 test("manual verify pass needs an override", () => {
   const { devflow } = setup();
   devflow("start", "t7", "x", "--tier", "small");

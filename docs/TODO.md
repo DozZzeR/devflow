@@ -29,6 +29,10 @@
 
 | Дата | Задача | Роли/модели | Итог | Что всплыло |
 |---|---|---|---|---|
+| 2026-11-18 | sandbox-calc `fix-sub` (small) | sonnet | DONE, 20 с | без замечаний; ворота pass, rollback подтвердил красный тест |
+| 2026-11-18 | sandbox-calc `add-muldiv` (medium), design | haiku → opus | design ok → отказ | баг промпта: Outputs перечислял 3 файла, opus не создал спеку и вписал её в design.md; встроенная проверка не заметила → исправлено, добавлен `approve --reject` |
+| 2026-11-18 | то же, переделка | opus | fail → ok | правило «все файлы свежие» ломало переделку (opus верно оставил хорошие файлы) → для переделки требуется изменение плана, не свежесть всех файлов |
+| 2026-11-18 | то же, implement → verify | sonnet → codex | REWORK (только low) → PASS, 3.4 мин, verify ~16–18 тыс. токенов | verify дал REWORK на одних low и пожаловался на отсутствие design.md → в промпт: REWORK только при high/medium, отсутствие design.md намеренно |
 | 2026-11-18 | verify `add-runners` (codex gpt-6.2-sol) | verify | HUMAN | `--ignore-user-config` срезал доверие и Windows-песочницу, codex не читал репо → дефолт false |
 | 2026-11-18 | verify `add-runners`, круг 1 | verify | REWORK, 10 | таймаут не убивал дерево внутри песочницы codex (тест «зелёный» за 60 с); хук fail-open; ключи через env.pass |
 | 2026-11-18 | verify `add-runners`, круг 2 | verify | REWORK | дальше глубокое укрепление, см. «Отложенное» |
@@ -84,6 +88,6 @@
 ## Дорожная карта (следующие изменения)
 
 - [x] Ворота: zone, rollback-check, tests (+ автоэскалация по SPEC §4.4) — `add-gates`.
-- [ ] Промпты этапов + `devflow run` + адаптер OpenSpec (change-папка, `## Impact zone` → zone.json).
+- [x] Промпты этапов + `devflow run` + адаптер OpenSpec — `add-stage-run`.
 - [ ] Плагины Claude Code и Codex из одного источника скиллов.
 - [ ] MCP-сервер (`devflow_run` в фоне, статус, лог).
