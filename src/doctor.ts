@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Config, Role } from "./config.js";
 import { buildChildEnv, launch, resolveCommand } from "./proc.js";
 import { runRole, type RunResult } from "./runners.js";
@@ -29,6 +30,28 @@ function firstLine(s: string): string {
   return s.split(/\r?\n/).find((l) => l.trim())?.trim() ?? "";
 }
 
+/** Summarise login output without personal data (claude prints JSON with email/org). */
+export function loginSummary(out: string): string {
+  try {
+    const j = JSON.parse(out) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
+    if (typeof j.loggedIn === "boolean") {
+      return j.loggedIn ? `logged in via ${j.authMethod ?? "?"}${j.subscriptionType ? ` (${j.subscriptionType})` : ""}` : "not logged in";
+    }
+  } catch {
+    /* plain text */
+  }
+  return firstLine(out) || "ok";
+}
+
+function lastLogLine(path: string): string | undefined {
+  try {
+    const lines = readFileSync(path, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return lines.at(-1)?.slice(0, 200);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function cliStatus(name: "claude" | "codex", cwd: string, parentEnv: NodeJS.ProcessEnv = process.env): Promise<CliStatus> {
   const env = buildChildEnv(parentEnv);
   const path = resolveCommand(name, env) ?? null;
@@ -39,7 +62,7 @@ export async function cliStatus(name: "claude" | "codex", cwd: string, parentEnv
     name,
     path,
     version: version.code === 0 ? firstLine(version.out) : null,
-    login: login.code === 0 ? firstLine(login.out) || "ok" : "unknown",
+    login: login.code === 0 ? loginSummary(login.out) : "unknown",
   };
 }
 
@@ -85,7 +108,7 @@ export async function doctor(root: string, config: Config, probe: boolean, paren
       ok: result?.ok ?? false,
       durationMs: result?.durationMs ?? 0,
       log: result?.log ?? "",
-      ...(detail ? { detail } : result?.timedOut ? { detail: "timed out" } : {}),
+      ...(detail ? { detail } : result?.timedOut ? { detail: "timed out" } : result && !result.ok ? { detail: lastLogLine(result.log) ?? "failed" } : {}),
     });
   }
   return report;

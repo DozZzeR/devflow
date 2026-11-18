@@ -83,7 +83,7 @@ const ROLE_PRESETS = {
     explore: { runner: "codex", model: "gpt-5.6-luna" },
     design: { runner: "codex", model: "gpt-6.2-sol" },
     implement: { runner: "codex", model: "gpt-5.6-terra" },
-    verify: { runner: "codex", model: "gpt-5.5" },
+    verify: { runner: "codex", model: "gpt-6.2-sol" },
     small: { runner: "codex", model: "gpt-5.6-terra" },
   },
 } as const;

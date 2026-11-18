@@ -107,3 +107,9 @@ test("hook command reads Claude's event on stdin", () => {
   const r = devflow(root, process.env, ["hook", "pre-tool-use", "--scope-file", scope], JSON.stringify({ tool_name: "Write", tool_input: { file_path: "x.md" } }));
   assert.equal(JSON.parse(r.out).hookSpecificOutput.permissionDecision, "deny");
 });
+
+test("login summary hides personal data from JSON status", async () => {
+  const { loginSummary } = await import("../src/doctor.js");
+  assert.equal(loginSummary(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "pro", email: "a@b.c" })), "logged in via claude.ai (pro)");
+  assert.equal(loginSummary("Logged in using ChatGPT\nmore"), "Logged in using ChatGPT");
+});
