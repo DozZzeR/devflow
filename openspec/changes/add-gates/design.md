@@ -2,7 +2,7 @@
 
 ## Context
 
-Lifecycle, config and runners exist (`openspec/specs/task-lifecycle`, `project-config`, `runners`). The lifecycle already has a `gates` stage recorded by `devflow complete <id> gates ok|fail`. Lessons that shape this change are in `docs/TODO.md` ("Известные грабли окружения"): results depend on the environment, and an environment failure must never look like a meaningful result.
+Lifecycle, config and runners exist (`openspec/specs/task-lifecycle`, `project-config`, `runners`). The lifecycle already has a `gates` stage recorded by `devflow complete <id> gates ok|fail`. Lessons that shape this change are in `docs/TODO.md` ("Известные грабли окружения"): results depend on the environment, and an environment failure must never look like a meaningful result. A Codex plan review (`.devflow/runs/add-gates/plan-review.md`, REWORK, 7 findings) shaped decisions 2, 3, 4, 5, 6, 7, 8 and 10.
 
 ## Goals / Non-Goals
 
@@ -13,31 +13,36 @@ Lifecycle, config and runners exist (`openspec/specs/task-lifecycle`, `project-c
 **Non-Goals:**
 - Binding verify verdicts to the diff hash (comes with stage prompts and `devflow run`).
 - Reading the zone from OpenSpec change folders automatically (adapter change); `--from-design` covers it manually.
-- Mutation testing beyond the rollback check.
+- Per-test evidence and mutation testing beyond the suite-level rollback check.
 
 ## Decisions
 
-1. **Git via the `git` CLI** through the existing process helper (`launch`, allowlisted env plus `GIT_*` not passed). Commands: `rev-parse --verify HEAD`, `diff --name-status -z --find-renames <base>`, `ls-files --others --exclude-standard -z`, `worktree add --detach <tmp> <base>`, `worktree remove --force <tmp>`, `worktree prune`. `-z` output avoids quoting problems with unusual file names. Alternative: a JS git library. Rejected: new dependency, worse Windows behaviour.
+1. **Git via the `git` CLI** through the existing process helper. `rev-parse --show-toplevel` and `--show-prefix` map the project directory (which may be a subdirectory) to repo paths; all git paths are converted to project-relative and filtered to the project. Commands use `-z` output: `diff --name-status -z --find-renames <base> -- <prefix>`, `ls-files --others --exclude-standard -z -- <prefix>`, `worktree add --detach <tmp> <base>`, `worktree remove --force <tmp>`. Alternative: a JS git library. Rejected: new dependency, weaker on Windows.
 
-2. **Change set** = union of name-status entries (for renames both old and new path) and untracked files, minus `.devflow/**`. Computed fresh on every gate run; never cached.
+2. **Change set** = name-status entries (both paths for renames) plus untracked, non-ignored files, minus `.devflow/runs/**` and `.devflow/logs/**` only. `.devflow/config.json` counts, so a role cannot silently change the test command or limits. Writes into git-ignored paths (for example `node_modules/`) are invisible to git; accepted limitation, noted in docs/TODO.md.
 
-3. **Rollback check by copying files, not by patches.** In the temp worktree at the base: run `test.setup` if set, then the baseline. Then copy (or delete) the test-file subset from the working tree, run tests, expect non-zero. Then copy the rest, run tests, expect zero. Copying avoids `git apply` failures on binary or whitespace edge cases and keeps the user's index untouched. Temp worktrees live under the OS temp dir and are removed in a `finally`, followed by `git worktree prune`.
+3. **Rollback check by copying files.** In the temp worktree at the base (project dir = worktree + prefix): setup (if any), baseline run; copy or delete the test subset, run, expect red; copy the rest, run setup again if any changed path matches `test.setup_inputs`, run, expect green. Copying avoids `git apply` failures and keeps the user's index untouched. Removal in `finally` with up to 3 retries (Windows file locks from surviving descendants); persistent failure → `blocked: cleanup_failed` with the path; only that worktree is removed, no repository-wide prune.
 
-4. **Test command execution.** The test command is the user's own (from config), run through the platform shell (`cmd.exe /d /s /c` or `/bin/sh -c`) with the parent environment, because tests legitimately need project env (database URLs etc.). This differs from model runners on purpose: no model sees this environment. Output goes to `.devflow/runs/<id>/logs/gate-<name>-<n>.log` via the existing log writer (redacted). Timeout from `test.timeout_seconds`; kill and teardown reuse `launch`.
+4. **Test command execution.** The configured command runs in the platform shell with the parent environment (the user's own tests, no model involved): Windows `cmd.exe /d /s /c "<command>"` with `windowsVerbatimArguments` (Node's default quoting would mangle quoted commands), POSIX `/bin/sh -c`. Output goes to `.devflow/runs/<id>/logs/gate-<name>-<n>.log` through the log writer. Timeout from `test.timeout_seconds`; timeout or kill → `blocked: test_run_error`.
 
-5. **`devflow gate` and the lifecycle.** A new event `gates(result)` in the reducer replaces `complete gates` internally: it carries which gate failed, so the reducer can apply escalation triggers. `devflow complete <id> gates ok|fail` keeps working (treated as a gates result without a failing gate name). Order for `all`: zone (cheapest), tests, rollback (slowest).
+5. **Three outcomes.** `pass | fail | blocked`. `blocked` covers every "could not check" case so the environment never masquerades as a verdict on the code.
 
-6. **Escalation in the reducer.** State gains `counters.gatesFailedInARow` and `counters.reworks`. Triggers per spec; escalation reuses the existing `escalate` path with the trigger as reason; on `complex` the task goes to `HUMAN` with the same reason. Counters reset on gates pass and on any tier change.
+6. **Reducer events.** New event `gates { outcome, gate?, reason? }`. `pass` → as `ok`, resets `counters.gatesFailedInARow`. `fail` → consumes an implement attempt, increments the counter, then escalation is evaluated before limits (escalation resets counters and attempts; on `complex` → `HUMAN` with the trigger). `blocked` → `HUMAN` with the reason, nothing else changes. `devflow complete <id> gates ok` requires `--override "<reason>"` and is recorded as a human override; `fail` stays allowed.
 
-7. **State schema 2.** New optional fields `base`, `zone`, `counters`. Loader accepts schema 1 and maps it to 2 in memory; save writes 2. Unknown versions still fail.
+7. **Escalation keeps the working tree.** docs/SPEC.md §4.4 planned to stash the diff as `draft.patch` and reset the tree on small → medium. That is destructive and is dropped: the tree stays, explore/design see the existing changes. SPEC §4.4 is updated accordingly.
 
-8. **Zone parsing from design.** Find a heading line `## Impact zone` (case-insensitive), take following lines up to the next heading, collect `- <glob>` items (backticks stripped). Same validation as write globs (relative, no `..`, no drive prefix).
+8. **State schema 2.** Optional `base`, `zone`, `counters { gatesFailedInARow, reworks }`. Schema 1 is upgraded in memory; save writes 2. Upgraded tasks have no base → gates `blocked: no_base` until `devflow base <id> <commit>`.
+
+9. **Zone parsing from design.** Heading `## Impact zone` (case-insensitive) up to the next heading; `- <glob>` items, backticks stripped; same validation as write globs.
+
+10. **Red exit codes.** Default red = any non-zero exit except timeout/kill. Projects whose runner separates "tests failed" from "could not run" (pytest: 1 vs 2–5) can set `test.red_exit_codes: [1]`; other codes then become `blocked`. Suite-level red cannot prove each changed test is red; per-file rollback is future work (docs/TODO.md).
 
 ## Impact zone
 
 - `src/git.ts`
 - `src/gates.ts`
 - `src/zone.ts`
+- `src/proc.ts`
 - `src/lifecycle.ts`
 - `src/store.ts`
 - `src/config.ts`
@@ -46,19 +51,21 @@ Lifecycle, config and runners exist (`openspec/specs/task-lifecycle`, `project-c
 - `README.md`
 - `docs/SPEC.md`
 - `docs/TODO.md`
-- `openspec/changes/add-gates/tasks.md`
+- `.devflow/config.json`
+- `openspec/changes/add-gates/**`
 
 ## Test plan
 
-- `test/git.test.ts` (temp git repos): change set with modified, added, deleted, renamed, untracked and ignored files; `.devflow/` excluded; names with spaces.
-- `test/zone.test.ts`: parsing `## Impact zone` (backticks, stops at next heading, missing section); zone gate pass/fail lists outsiders; `no_zone` fail vs small-task warning.
-- `test/rollback.test.ts` (temp git repo with a tiny `node check.js` test command): real regression test → pass; test that passes at base → `tests_check_nothing`; no test files → `no_tests`; broken baseline → `baseline_failed`; `test.setup` runs; user working tree and `git status` unchanged; temp worktree removed.
-- `test/lifecycle.test.ts` additions: gates result events, consecutive failure escalation, zone violation escalation and HUMAN on complex, rework_repeated, counter resets; schema-1 upgrade.
-- `test/cli-gates.test.ts`: `start` records base and `--zone`; `zone --from-design`; `gate all` advances only when `gates` is next; single gate leaves state unchanged; stop at first failure.
+- `test/git.test.ts` (temp git repos): change set with modified, added, deleted, renamed, untracked and ignored files; `.devflow/runs` excluded but `.devflow/config.json` included; names with spaces; project in a subdirectory of the repo.
+- `test/zone.test.ts`: parsing `## Impact zone` (backticks, stops at next heading, missing section); zone pass/fail lists outsiders; `no_zone` blocked for medium vs warning for small.
+- `test/rollback.test.ts` (temp git repo, test command `node check.js`): real regression → pass; passes at base → `tests_check_nothing`; no test files → `no_tests`; broken baseline → `blocked: baseline_failed`; setup runs, and again when a `setup_inputs` file changed; `red_exit_codes` makes other codes `blocked`; timeout → `blocked`; `git status --porcelain` identical before/after; temp worktree gone; quoted test command works on Windows.
+- `test/lifecycle.test.ts` additions: gates pass/fail/blocked events; escalation before limits; zone violation; `rework_repeated`; HUMAN on complex; counter resets; override required for manual gates ok; schema-1 upgrade.
+- `test/cli-gates.test.ts`: `start` records base and `--zone`; `zone --from-design`; `base`; `gate all` records only when `gates` is next; single gate leaves state unchanged; stop at first non-pass; `complete gates ok` without override refused.
 
 ## Risks / Trade-offs
 
-- [Baseline needs dependencies in the worktree] → `test.setup`; failures are `baseline_failed`, never a misleading red.
-- [Rollback is slow: up to three suite runs] → run last in `all`; can be run alone; future: test-path filtering.
+- [Baseline needs dependencies in the worktree] → `test.setup` (re-run when manifests change); failures are `blocked`, never a misleading red.
+- [Writes into git-ignored paths are invisible to the zone gate] → accepted; listed in docs/TODO.md.
+- [Rollback is slow: up to three suite runs plus setup] → run last in `all`; can be run alone.
 - [Test command gets the parent environment] → intentional (user's own tests, no model); documented in README.
-- [Projects without git] → `start` works, gates fail `no_git`; documented.
+- [Projects without git] → `start` works, gates are `blocked: no_git`; documented.

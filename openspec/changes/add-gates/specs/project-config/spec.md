@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Test setup command
+### Requirement: Test run settings
 
-The configuration SHALL accept an optional `test.setup` command, run in the rollback gate's temporary worktree before the baseline test run (for example dependency installation), and an optional `test.timeout_seconds` (positive integer, default 1800) applied to each test run.
+The configuration SHALL accept optional `test.setup` (command run in the rollback worktree), `test.setup_inputs` (globs that trigger a second setup, default common dependency manifests and lockfiles), `test.red_exit_codes` (non-empty list of integers; default any non-zero code) and `test.timeout_seconds` (positive integer, default 1800).
 
 #### Scenario: Setup configured
 
