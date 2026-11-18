@@ -185,7 +185,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
 
   // An approved plan must not change afterwards.
   if (task.tier !== "small" && task.planDigest && ["implement", "gates", "verify"].includes(stage)) {
-    if (planDigest(root, id) !== task.planDigest) {
+    if (planDigest(root, id, task.planRevision ?? 1) !== task.planDigest) {
       task = record(root, task, { kind: "invalidate", to: "approval", reason: "plan_changed" }, config, io);
       return { stage: "invalidate", outcome: "plan_changed", next: nextStage(task, config) };
     }
@@ -212,17 +212,14 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       // A first design must produce every file fresh. A revision after a rejection may keep files that
       // were fine, but must change the plan.
       const revision = rejections.length > 0;
-      const digestBefore = revision ? planDigest(root, id) : "";
+      const filesBefore = revision ? planDigest(root, id) : "";
       const required = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
       const r = await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
       if (!r.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
         return report("fail", task, "run_failed", r);
       }
-      if (revision && planDigest(root, id) === digestBefore) {
-        task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
-        return report("fail", task, "plan_unchanged");
-      }
+      const unchanged = revision && planDigest(root, id) === filesBefore;
       const check = await checkDesign(root, id, config, revision ? undefined : before);
       if (!check.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
@@ -230,7 +227,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       }
       task = setZone(root, task, check.zone!, io);
       task = record(root, task, { kind: "complete", stage, outcome: "ok", byRun: true }, config, io);
-      return report("ok", task);
+      return report("ok", task, unchanged ? "plan_files_unchanged" : undefined, { revision: task.planRevision ?? 1 });
     }
 
     case "implement": {

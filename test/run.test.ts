@@ -116,14 +116,17 @@ test("a failing role stops the loop with fail", () => {
   assert.equal(lines(r.out)[0].outcome, "fail");
 });
 
-test("a rejected plan goes back to design; a revision that changes nothing fails", () => {
+test("a rejected plan goes back to design as a new revision; unchanged files are flagged, not failed", () => {
   const { root, devflow, state, lines, prompts } = setup();
   devflow("start", "t8", "Add mul");
   devflow("run", "t8");
   assert.equal(devflow("approve", "t8", "--reject", "Cover negative numbers").code, 0);
   assert.equal(state("t8").status, "EXPLORED");
+  assert.equal(state("t8").planRevision, 2);
   const r = lines(devflow("run", "t8", "--once").out);
-  assert.deepEqual([r[0].stage, r[0].outcome, r[0].reason], ["design", "fail", "plan_unchanged"]);
+  assert.deepEqual([r[0].stage, r[0].outcome, r[0].reason, r[0].details.revision], ["design", "ok", "plan_files_unchanged", 2]);
+  assert.equal(devflow("approve", "t8").code, 0);
+  assert.ok(state("t8").planDigest);
   const designPrompts = readdirSync(prompts).filter((f) => f.startsWith("DESIGN"));
   const last = readFileSync(join(prompts, designPrompts.sort().at(-1)!), "utf8");
   assert.match(last, /Cover negative numbers/);

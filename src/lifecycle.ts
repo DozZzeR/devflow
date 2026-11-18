@@ -59,6 +59,7 @@ export const TaskStateSchema = z.strictObject({
   }),
   lastVerdict: z.strictObject({ outcome: z.string(), at: z.string(), snapshot: z.string().optional() }).optional(),
   planDigest: z.string().optional(),
+  planRevision: z.number().int().positive().optional(),
   gatesSnapshot: z.string().optional(),
   base: z.string().optional(),
   zone: z.array(z.string()).optional(),
@@ -336,7 +337,8 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       }
       t.status = "EXPLORED";
       delete t.planDigest;
-      t.history.push({ at: now, kind: "reject", reason: event.reason });
+      t.planRevision = (t.planRevision ?? 1) + 1;
+      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}` });
       return t;
     }
 

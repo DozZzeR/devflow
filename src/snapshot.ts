@@ -67,9 +67,10 @@ export function changeFiles(root: string, id: string): string[] {
 }
 
 /** Digest of the plan: every file of the change folder, with tasks.md checkbox state erased. */
-export function planDigest(root: string, id: string): string {
+export function planDigest(root: string, id: string, revision = 1): string {
   const dir = changeFolder(root, id);
   const h = createHash("sha256");
+  h.update(`revision\0${revision}\0`);
   for (const f of changeFiles(root, id)) {
     let content = readFileSync(join(dir, f), "utf8").replace(/\r\n/g, "\n");
     if (f === "tasks.md") content = normaliseTasks(content);

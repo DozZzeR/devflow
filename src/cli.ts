@@ -223,7 +223,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           if (changeFiles(root, id).length) {
             const check = await checkDesign(root, id, config);
             if (!check.ok) throw new DevflowError("design_invalid", `Plan for ${id} does not pass the design checks: ${check.reason}`, check.details);
-            event = { kind: "approve", planDigest: planDigest(root, id), zone: check.zone! };
+            event = { kind: "approve", planDigest: planDigest(root, id, loadTask(root, id).planRevision ?? 1), zone: check.zone! };
           }
         }
         const t = apply(io, args[0]!, event);
