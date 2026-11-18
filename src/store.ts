@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
-import { TaskStateSchema, type TaskState } from "./lifecycle.js";
+import { COUNTERS_ZERO, TaskStateSchema, type TaskState } from "./lifecycle.js";
 
 export const RUNS_DIR = "runs";
 export const STATE_FILE = "state.json";
@@ -77,10 +77,10 @@ export function loadTask(root: string, id: string): TaskState {
   } catch (e) {
     throw new DevflowError("invalid_state", `${file} is not valid JSON (${(e as Error).message}); left untouched.`);
   }
-  const parsed = TaskStateSchema.safeParse(raw);
+  const parsed = TaskStateSchema.safeParse(upgrade(raw));
   if (!parsed.success) {
     const schema = (raw as { schema?: unknown } | null)?.schema;
-    const what = schema !== 1 ? `unknown schema version ${JSON.stringify(schema)}` : "invalid content";
+    const what = schema !== 1 && schema !== 2 ? `unknown schema version ${JSON.stringify(schema)}` : "invalid content";
     throw new DevflowError("invalid_state", `${file}: ${what}; left untouched.`, parsed.error.issues);
   }
   if (parsed.data.id !== id) {
@@ -96,6 +96,14 @@ export function listTaskIds(root: string): string[] {
     .filter((d) => d.isDirectory() && existsSync(join(dir, d.name, STATE_FILE)))
     .map((d) => d.name)
     .sort();
+}
+
+/** Schema 1 → 2 in memory: no base, no zone, zero counters. Other versions pass through unchanged. */
+export function upgrade(raw: unknown): unknown {
+  if (raw && typeof raw === "object" && (raw as { schema?: unknown }).schema === 1) {
+    return { ...(raw as object), schema: 2, counters: { ...COUNTERS_ZERO } };
+  }
+  return raw;
 }
 
 function serialize(task: TaskState): string {

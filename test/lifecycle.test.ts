@@ -138,3 +138,52 @@ test("human tier change resumes a HUMAN task", () => {
   assert.equal(nextStage(t, c).stage, "implement");
   rejects(() => transition(t, { kind: "tier", tier: "small" }, c, NOW), "same_tier");
 });
+
+test("gates: blocked goes to HUMAN without touching counters or attempts", () => {
+  const before = play(task("small"), cfg, ok("implement"));
+  const t = play(before, cfg, { kind: "gates", outcome: "blocked", gate: "rollback", reason: "baseline_failed" });
+  assert.deepEqual([t.status, t.humanReason], ["HUMAN", "baseline_failed"]);
+  assert.deepEqual([t.counters, t.attempts], [before.counters, before.attempts]);
+});
+
+test("gates: repeated failures escalate before limits; files are not touched (tier only)", () => {
+  const c = config({ limits: { escalate_after: 2, implement: 2 } });
+  const t = play(task("small"), c, ok("implement"), fail("gates"), ok("implement"), fail("gates"));
+  assert.equal(t.tier, "medium");
+  assert.equal(nextStage(t, c).stage, "explore");
+  const esc = t.history.at(-1)!;
+  assert.deepEqual([esc.kind, esc.reason], ["escalate", "gates_failed_repeatedly"]);
+  assert.deepEqual([t.counters.gatesFailedInARow, t.attempts.implement], [0, 0]);
+});
+
+test("gates: a zone violation escalates immediately; on complex it goes to HUMAN", () => {
+  const zoneFail = { kind: "gates" as const, outcome: "fail" as const, gate: "zone", reason: "outside_zone" };
+  const s = play(task("small"), cfg, ok("implement"), zoneFail);
+  assert.deepEqual([s.tier, s.history.at(-1)!.reason], ["medium", "zone_violation"]);
+  const c = play(task("complex"), cfg, ok("explore"), ok("design"), { kind: "approve" }, ok("implement"), zoneFail);
+  assert.deepEqual([c.status, c.humanReason, c.tier], ["HUMAN", "zone_violation", "complex"]);
+});
+
+test("gates pass resets the failure counter", () => {
+  const t = play(task("medium"), cfg, ok("explore"), ok("design"), { kind: "approve" }, ok("implement"), fail("gates"), ok("implement"), ok("gates"));
+  assert.equal(t.counters.gatesFailedInARow, 0);
+  assert.equal(nextStage(t, cfg).stage, "verify");
+});
+
+test("second rework on medium escalates to complex", () => {
+  const c = config({ limits: { verify: 5 } });
+  const toVerify = [ok("implement"), ok("gates")];
+  const t = play(task("medium"), c, ok("explore"), ok("design"), { kind: "approve" }, ...toVerify, verify("rework"), ...toVerify, verify("rework"));
+  assert.equal(t.tier, "complex");
+  assert.equal(t.history.at(-1)!.reason, "rework_repeated");
+  assert.equal(nextStage(t, c).stage, "design");
+});
+
+test("manual gates ok needs an override and is recorded as such", () => {
+  const t = play(task("small"), cfg, ok("implement"));
+  rejects(() => transition(t, { kind: "complete", stage: "gates", outcome: "ok" }, cfg, NOW), "gates_need_gate_run");
+  const o = transition(t, { kind: "complete", stage: "gates", outcome: "ok", override: "checked by hand" }, cfg, NOW);
+  assert.equal(o.status, "DONE");
+  assert.deepEqual([o.history.at(-1)!.kind, o.history.at(-1)!.reason], ["override", "checked by hand"]);
+  rejects(() => transition(task("small"), { kind: "gates", outcome: "pass" }, cfg, NOW), "stage_not_next");
+});

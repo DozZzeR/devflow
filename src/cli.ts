@@ -7,6 +7,9 @@ import { doctor } from "./doctor.js";
 import { runHook } from "./hook.js";
 import { resolveCommand } from "./proc.js";
 import { runRole } from "./runners.js";
+import { GATE_NAMES, runAllGates, runGate, type GateName } from "./gates.js";
+import { git, headCommit, repoInfo } from "./git.js";
+import { validateZone, zoneFromDesign } from "./zone.js";
 import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
@@ -15,9 +18,9 @@ const USAGE = `devflow — role-separated dev workflow
 
 Usage:
   devflow init [--dir <path>] [--runners mixed|claude|codex]
-  devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>]
+  devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>] [--zone <glob>]...
   devflow next <id>
-  devflow complete <id> <stage> <outcome>
+  devflow complete <id> <stage> <outcome> [--override "<reason>"]   (gates ok needs --override)
   devflow approve <id> [--resume]
   devflow tier <id> <small|medium|complex>
   devflow escalate <id> --reason "<why>"
@@ -25,6 +28,9 @@ Usage:
   devflow exec-role <role> --prompt-file <file> [--write <glob>]... [--allow-bash <cmd>]...
                     [--expect <path>]... [--timeout <seconds>] [--task <id>]
   devflow doctor [--probe] [--json]
+  devflow zone <id> (--from-design <file> | --zone <glob>...)
+  devflow base <id> <commit>
+  devflow gate <id> [zone|tests|rollback|all]
 
 Global: --json (machine-readable errors), --help, --version`;
 
@@ -34,8 +40,8 @@ interface Parsed {
   lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file"]);
-const LIST_FLAGS = new Set(["write", "expect", "allow-bash"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design"]);
+const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
 const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe"]);
 
 export function parseArgs(argv: string[]): Parsed {
@@ -163,6 +169,15 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const tier = asTier(str(p, "tier") ?? "medium");
         const { root, config } = project(io);
         const task = newTask(id, description, tier, str(p, "tracker"), io.now());
+        const zone = p.lists.get("zone");
+        if (zone) {
+          validateZone(zone);
+          task.zone = zone;
+        }
+        if (repoInfo(root)) {
+          const head = headCommit(root);
+          if (head) task.base = head;
+        }
         createTask(root, task);
         io.out(json ? JSON.stringify(summary(task, config)) : `Started ${id} (${tier}). Next: ${nextStage(task, config).stage}`);
         return 0;
@@ -176,7 +191,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
       case "complete": {
         arity(args, 3, 3, "complete <id> <stage> <outcome>");
         const [id, stage, outcome] = args as [string, string, string];
-        const t = apply(io, id, { kind: "complete", stage: asStage(stage), outcome });
+        const override = str(p, "override");
+        const t = apply(io, id, { kind: "complete", stage: asStage(stage), outcome, ...(override ? { override } : {}) });
         const { config } = project(io);
         io.out(JSON.stringify(nextStage(t, config)));
         return 0;
@@ -268,6 +284,69 @@ export async function run(argv: string[], io: Io): Promise<number> {
         }
         const failed = report.missing.length > 0 || (report.probes ?? []).some((x) => !x.ok);
         return failed ? 1 : 0;
+      }
+      case "zone": {
+        arity(args, 1, 1, "zone <id> (--from-design <file> | --zone <glob>...)");
+        const { root, config } = project(io);
+        const task = loadTask(root, args[0]!);
+        const design = str(p, "from-design");
+        const listed = p.lists.get("zone");
+        if (!!design === !!listed) throw new UsageError("zone needs exactly one of --from-design <file> or --zone <glob>...");
+        const zone = design ? zoneFromDesign(design) : listed!;
+        validateZone(zone);
+        task.zone = zone;
+        task.updatedAt = io.now();
+        task.history.push({ at: task.updatedAt, kind: "zone", reason: zone.join(", ") });
+        saveTask(root, task);
+        io.out(JSON.stringify({ id: task.id, zone }));
+        void config;
+        return 0;
+      }
+      case "base": {
+        arity(args, 2, 2, "base <id> <commit>");
+        const { root } = project(io);
+        const task = loadTask(root, args[0]!);
+        if (!repoInfo(root)) throw new DevflowError("no_git", `${root} is not inside a git repository.`);
+        const r = git(root, ["rev-parse", "--verify", "--end-of-options", `${args[1]!}^{commit}`], { allowFail: true });
+        if (r.code !== 0) throw new DevflowError("invalid_commit", `"${args[1]}" is not a commit.`);
+        task.base = r.stdout.trim();
+        task.updatedAt = io.now();
+        task.history.push({ at: task.updatedAt, kind: "base", reason: task.base });
+        saveTask(root, task);
+        io.out(JSON.stringify({ id: task.id, base: task.base }));
+        return 0;
+      }
+      case "gate": {
+        arity(args, 1, 2, "gate <id> [zone|tests|rollback|all]");
+        const which = args[1] ?? "all";
+        if (which !== "all" && !(GATE_NAMES as readonly string[]).includes(which)) {
+          throw new UsageError(`Gate must be one of: ${GATE_NAMES.join(", ")}, all`);
+        }
+        const { root, config } = project(io);
+        const task = loadTask(root, args[0]!);
+        const ctx = { root, task, config, parentEnv: io.env };
+        let recorded = false;
+        let out: Record<string, unknown>;
+        if (which === "all") {
+          const { results, skipped } = await runAllGates(ctx);
+          out = { id: task.id, results, skipped };
+          if (nextStage(task, config).stage === "gates") {
+            const last = results[results.length - 1]!;
+            const event = last.outcome === "pass"
+              ? { kind: "gates" as const, outcome: "pass" as const }
+              : { kind: "gates" as const, outcome: last.outcome, gate: last.name, ...(last.reason ? { reason: last.reason } : {}) };
+            const next = transition(task, event, config, io.now());
+            saveTask(root, next);
+            recorded = true;
+            out.next = nextStage(next, config);
+          }
+        } else {
+          out = { id: task.id, results: [await runGate(which as GateName, ctx)] };
+        }
+        out.recorded = recorded;
+        io.out(JSON.stringify(out));
+        const results = out.results as { outcome: string }[];
+        return results.every((r) => r.outcome === "pass") ? 0 : 1;
       }
       case "hook": {
         arity(args, 1, 1, "hook pre-tool-use --scope-file <file>");

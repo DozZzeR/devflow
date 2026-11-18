@@ -46,8 +46,8 @@ test("unknown schema version is reported as invalid_state", () => {
   const root = project();
   createTask(root, task());
   const file = join(taskDir(root, "t1"), "state.json");
-  writeFileSync(file, JSON.stringify({ ...task(), schema: 2 }));
-  assert.throws(() => loadTask(root, "t1"), (e: unknown) => isReason("invalid_state")(e) && /schema version 2/.test((e as Error).message));
+  writeFileSync(file, JSON.stringify({ ...task(), schema: 3 }));
+  assert.throws(() => loadTask(root, "t1"), (e: unknown) => isReason("invalid_state")(e) && /schema version 3/.test((e as Error).message));
 });
 
 test("ids that could escape the runs directory are rejected", () => {
@@ -56,4 +56,17 @@ test("ids that could escape the runs directory are rejected", () => {
     assert.throws(() => taskDir(root, id), isReason("invalid_id"), id);
   }
   assert.equal(NOW.length > 0, true);
+});
+
+test("schema-1 files are upgraded on load and saved as schema 2", () => {
+  const root = project();
+  createTask(root, task());
+  const file = join(taskDir(root, "t1"), "state.json");
+  const v1 = { ...task(), schema: 1 } as Record<string, unknown>;
+  delete v1.counters;
+  writeFileSync(file, JSON.stringify(v1));
+  const loaded = loadTask(root, "t1");
+  assert.deepEqual([loaded.schema, loaded.counters], [2, { gatesFailedInARow: 0, reworks: 0 }]);
+  saveTask(root, loaded);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).schema, 2);
 });

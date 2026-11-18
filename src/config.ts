@@ -41,6 +41,15 @@ export const ConfigSchema = z.strictObject({
   test: z.strictObject({
     command: z.string().min(1),
     paths: z.array(z.string().min(1)).min(1),
+    setup: z.string().min(1).optional(),
+    setup_inputs: z
+      .array(z.string().min(1))
+      .default([
+        "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+        "requirements*.txt", "pyproject.toml", "poetry.lock", "uv.lock", "Pipfile.lock",
+      ]),
+    red_exit_codes: z.array(z.number().int()).min(1).optional(),
+    timeout_seconds: positiveInt.default(1800),
   }),
   openspec: z.strictObject({ cli: z.enum(["auto", "on", "off"]) }).optional(),
   logs: z.strictObject({ keep: positiveInt }).optional(),

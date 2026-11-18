@@ -30,8 +30,9 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
 
 const HistoryEntrySchema = z.object({
   at: z.string(),
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone"]),
   stage: z.enum(STAGES).optional(),
+  gate: z.string().optional(),
   outcome: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -39,8 +40,10 @@ const HistoryEntrySchema = z.object({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
+export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0 };
+
 export const TaskStateSchema = z.strictObject({
-  schema: z.literal(1),
+  schema: z.literal(2),
   id: z.string(),
   description: z.string(),
   tier: z.enum(TIERS),
@@ -54,14 +57,23 @@ export const TaskStateSchema = z.strictObject({
     verify: z.number().int().nonnegative(),
   }),
   lastVerdict: z.strictObject({ outcome: z.string(), at: z.string() }).optional(),
+  base: z.string().optional(),
+  zone: z.array(z.string()).optional(),
+  counters: z.strictObject({
+    gatesFailedInARow: z.number().int().nonnegative(),
+    reworks: z.number().int().nonnegative(),
+  }),
   createdAt: z.string(),
   updatedAt: z.string(),
   history: z.array(HistoryEntrySchema),
 });
 export type TaskState = z.infer<typeof TaskStateSchema>;
 
+export type GateOutcome = "pass" | "fail" | "blocked";
+
 export type Event =
-  | { kind: "complete"; stage: Stage; outcome: string }
+  | { kind: "complete"; stage: Stage; outcome: string; override?: string }
+  | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string }
   | { kind: "approve" }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
@@ -81,12 +93,13 @@ const ZERO_ATTEMPTS = { explore: 0, design: 0, implement: 0, verify: 0 };
 
 export function newTask(id: string, description: string, tier: Tier, tracker: string | undefined, now: string): TaskState {
   const task: TaskState = {
-    schema: 1,
+    schema: 2,
     id,
     description,
     tier,
     status: "NEW",
     attempts: { ...ZERO_ATTEMPTS },
+    counters: { ...COUNTERS_ZERO },
     createdAt: now,
     updatedAt: now,
     history: [{ at: now, kind: "start", to: tier }],
@@ -172,24 +185,59 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     if (t.attempts.implement >= config.limits.implement) toHuman("limit_reached");
     else t.status = readyToImplement(t.tier);
   };
+  /** Automatic escalation by one tier; complex goes to a human instead. The working tree is never touched. */
+  const autoEscalate = (reason: string) => {
+    if (t.tier === "complex") {
+      toHuman(reason);
+      return;
+    }
+    const from = t.tier;
+    const to: Tier = from === "small" ? "medium" : "complex";
+    applyTierChange(t, to);
+    t.history.push({ at: now, kind: "escalate", from, to, reason });
+  };
+  /** Apply a gates result once the stage order has been checked. */
+  const applyGates = (outcome: GateOutcome, gate: string | undefined, reason: string | undefined) => {
+    if (outcome === "pass") {
+      t.counters.gatesFailedInARow = 0;
+      t.status = t.tier === "small" ? "DONE" : "GATES_PASSED";
+    } else if (outcome === "blocked") {
+      toHuman(reason ?? "gates_blocked");
+    } else {
+      t.counters.gatesFailedInARow++;
+      if (gate === "zone") autoEscalate("zone_violation");
+      else if (t.counters.gatesFailedInARow >= config.limits.escalate_after) autoEscalate("gates_failed_repeatedly");
+      else backToImplement();
+    }
+  };
+  const checkNext = (stage: Stage) => {
+    const expected = stageFor(task).stage;
+    if (stage !== expected) {
+      throw new DevflowError("stage_not_next", `Stage "${stage}" is not next for task ${task.id} (next: ${expected ?? "none"}).`);
+    }
+  };
 
   switch (event.kind) {
     case "complete": {
       const { stage, outcome } = event;
-      const expected = stageFor(task).stage;
-      if (stage !== expected) {
-        throw new DevflowError(
-          "stage_not_next",
-          `Stage "${stage}" is not next for task ${task.id} (next: ${expected ?? "none"}).`,
-        );
-      }
+      checkNext(stage);
       if (!OUTCOMES[stage].includes(outcome)) {
         throw new DevflowError(
           "invalid_outcome",
           `Outcome "${outcome}" is not valid for stage "${stage}" (allowed: ${OUTCOMES[stage].join(", ")}).`,
         );
       }
-      t.history.push({ at: now, kind: "complete", stage, outcome });
+      if (stage === "gates" && outcome === "ok" && !event.override) {
+        throw new DevflowError(
+          "gates_need_gate_run",
+          `Record gates with "devflow gate ${task.id}", or use --override "<reason>" to accept them by hand.`,
+        );
+      }
+      if (stage === "gates" && event.override) {
+        t.history.push({ at: now, kind: "override", stage, outcome, reason: event.override });
+      } else {
+        t.history.push({ at: now, kind: "complete", stage, outcome });
+      }
       switch (stage) {
         case "explore":
           t.attempts.explore++;
@@ -205,18 +253,36 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
           else backToImplement();
           break;
         case "gates":
-          if (outcome === "ok") t.status = t.tier === "small" ? "DONE" : "GATES_PASSED";
-          else backToImplement();
+          applyGates(outcome === "ok" ? "pass" : "fail", undefined, undefined);
           break;
         case "verify":
           t.attempts.verify++;
           t.lastVerdict = { outcome, at: now };
           if (outcome === "pass") t.status = "DONE";
           else if (outcome === "human") toHuman("verify_requested_human");
-          else if (t.attempts.verify >= config.limits.verify) toHuman("limit_reached");
-          else backToImplement();
+          else {
+            t.counters.reworks++;
+            if (t.tier === "medium" && t.counters.reworks >= 2) autoEscalate("rework_repeated");
+            else if (t.attempts.verify >= config.limits.verify) toHuman("limit_reached");
+            else backToImplement();
+          }
           break;
       }
+      if (t.status !== "HUMAN") delete t.humanReason;
+      return t;
+    }
+
+    case "gates": {
+      checkNext("gates");
+      t.history.push({
+        at: now,
+        kind: "gates",
+        stage: "gates",
+        outcome: event.outcome,
+        ...(event.gate ? { gate: event.gate } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+      });
+      applyGates(event.outcome, event.gate, event.reason);
       if (t.status !== "HUMAN") delete t.humanReason;
       return t;
     }
@@ -273,6 +339,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
 function applyTierChange(t: TaskState, to: Tier): void {
   const from = t.tier;
   t.tier = to;
+  t.counters = { ...COUNTERS_ZERO };
   delete t.humanReason;
   if (from === "small" || to === "small") {
     t.status = "NEW";

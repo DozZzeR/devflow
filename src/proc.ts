@@ -138,7 +138,29 @@ export function launch(opts: LaunchOptions): Promise<LaunchResult> {
   const viaCmd = isShim(resolved);
   const file = viaCmd ? (envGet(opts.env, "COMSPEC") ?? "cmd.exe") : resolved;
   const args = viaCmd ? ["/d", "/v:off", "/s", "/c", cmdLine(resolved, opts.args)] : [...opts.args];
+  return spawnAndWait(file, args, viaCmd, opts);
+}
 
+export type ShellOptions = Omit<LaunchOptions, "command" | "args">;
+
+/**
+ * Run a user-configured shell command (the project's test command). Windows: `cmd.exe /d /s /c "<command>"`
+ * verbatim, so quotes inside the command survive; POSIX: `/bin/sh -c`.
+ */
+export function launchShell(command: string, opts: ShellOptions): Promise<LaunchResult> {
+  if (!(opts.timeoutMs > 0) || opts.timeoutMs > MAX_TIMER_MS) {
+    return Promise.reject(new DevflowError("invalid_timeout", `Timeout must be between 1 ms and ${MAX_TIMER_MS} ms.`));
+  }
+  if (/[\r\n]/.test(command)) return Promise.reject(new DevflowError("invalid_command", "Shell command must be one line."));
+  if (IS_WINDOWS) {
+    const comspec = envGet(opts.env, "COMSPEC") ?? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+    return spawnAndWait(comspec, ["/d", "/s", "/c", `"${command}"`], true, opts);
+  }
+  return spawnAndWait("/bin/sh", ["-c", command], false, opts);
+}
+
+function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: ShellOptions): Promise<LaunchResult> {
+  const viaCmd = verbatim;
   const started = Date.now();
   const child = spawn(file, args, {
     cwd: opts.cwd,

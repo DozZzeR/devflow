@@ -23,8 +23,10 @@ export function play(t: TaskState, cfg: Config, ...events: Event[]): TaskState {
   return events.reduce((s, e) => transition(s, e, cfg, NOW), t);
 }
 
-export const ok = (stage: "explore" | "design" | "implement" | "gates"): Event => ({ kind: "complete", stage, outcome: "ok" });
-export const fail = (stage: "explore" | "design" | "implement" | "gates"): Event => ({ kind: "complete", stage, outcome: "fail" });
+export const ok = (stage: "explore" | "design" | "implement" | "gates"): Event =>
+  stage === "gates" ? { kind: "gates", outcome: "pass" } : { kind: "complete", stage, outcome: "ok" };
+export const fail = (stage: "explore" | "design" | "implement" | "gates"): Event =>
+  stage === "gates" ? { kind: "gates", outcome: "fail", gate: "tests" } : { kind: "complete", stage, outcome: "fail" };
 export const verify = (outcome: "pass" | "rework" | "human"): Event => ({ kind: "complete", stage: "verify", outcome });
 
 /** A temp dir removed after the test file finishes. */
