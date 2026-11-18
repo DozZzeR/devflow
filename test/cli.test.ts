@@ -34,7 +34,7 @@ test("medium task end to end with approval and status", () => {
   assert.equal(json(devflow(dir, "approve", "feat-x").out).stage, "implement");
   devflow(dir, "complete", "feat-x", "implement", "ok");
   devflow(dir, "complete", "feat-x", "gates", "ok", "--override", "test");
-  assert.equal(json(devflow(dir, "complete", "feat-x", "verify", "pass").out).reason, "done");
+  assert.equal(json(devflow(dir, "complete", "feat-x", "verify", "pass", "--override", "test").out).reason, "done");
   const status = json(devflow(dir, "status", "feat-x", "--json").out);
   assert.deepEqual([status.status, status.tracker], ["DONE", "GF-12"]);
 });

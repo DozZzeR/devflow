@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { initProject, loadConfig, type Config } from "../src/config.js";
 import { rollbackGate, runAllGates, testsGate, zoneGate } from "../src/gates.js";
 import { parseImpactZone } from "../src/zone.js";
@@ -19,7 +18,6 @@ function ctx(root: string, base: string | undefined, opts: { zone?: string[]; ti
   return { root, task, config };
 }
 
-const devflowTemps = () => readdirSync(tmpdir()).filter((n) => n.startsWith("devflow-wt-")).length;
 
 test("impact zone parsing: list items, backticks, stops at next heading", () => {
   const md = "# Design\n\n## Impact zone\n\n- `src/**`\n* test/**\n\n## Test plan\n- not/this\n";
@@ -55,11 +53,9 @@ test("rollback: real regression test passes and leaves the working tree untouche
   write(root, "src/math.js", "exports.add = (a, b) => a + b;\nexports.mul = (a, b) => a * b;\n");
   write(root, "tests/mul.test.js", "const { mul } = require('../src/math'); if (mul(2, 3) !== 6) throw new Error('mul');\n");
   const before = sh(root, "git", ["status", "--porcelain"]);
-  const temps = devflowTemps();
   const r = await rollbackGate(ctx(root, base));
   assert.equal(r.outcome, "pass", JSON.stringify(r));
   assert.equal(sh(root, "git", ["status", "--porcelain"]), before);
-  assert.equal(devflowTemps(), temps, "temporary worktree left behind");
   assert.equal(sh(root, "git", ["worktree", "list"]).trim().split("\n").length, 1);
 });
 

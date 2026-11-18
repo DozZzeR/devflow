@@ -10,6 +10,10 @@ import { runRole } from "./runners.js";
 import { GATE_NAMES, gateConfig, runAllGates, runGate, type GateName } from "./gates.js";
 import { git, headCommit, repoInfo } from "./git.js";
 import { validateZone, zoneFromDesign } from "./zone.js";
+import { checkDesign } from "./artifacts.js";
+import { adoptLock, acquireLock, latestRunLog, newRunId, readLock, releaseLock, startDetached } from "./background.js";
+import { changeFiles, planDigest } from "./snapshot.js";
+import { runGatesStage, runLoop } from "./stages.js";
 import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
@@ -31,6 +35,8 @@ Usage:
   devflow zone <id> (--from-design <file> | --zone <glob>...)
   devflow base <id> <commit>
   devflow gate <id> [zone|tests|rollback|all]
+  devflow run <id> [--once] [--detach] [--timeout <seconds>]
+  devflow log <id> [--follow]
 
 Global: --json (machine-readable errors), --help, --version`;
 
@@ -40,9 +46,9 @@ interface Parsed {
   lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id"]);
 const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
-const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe"]);
+const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow"]);
 
 export function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
@@ -191,6 +197,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
       case "complete": {
         arity(args, 3, 3, "complete <id> <stage> <outcome>");
         const [id, stage, outcome] = args as [string, string, string];
+        if (stage === "verify" && outcome === "pass" && !str(p, "override")) {
+          throw new DevflowError("verify_needs_run", `Record verify with "devflow run ${id}", or use --override "<reason>".`);
+        }
         const override = str(p, "override");
         const t = apply(io, id, { kind: "complete", stage: asStage(stage), outcome, ...(override ? { override } : {}) });
         const { config } = project(io);
@@ -199,7 +208,18 @@ export async function run(argv: string[], io: Io): Promise<number> {
       }
       case "approve": {
         arity(args, 1, 1, "approve <id> [--resume]");
-        const t = apply(io, args[0]!, p.flags.has("resume") ? { kind: "resume" } : { kind: "approve" });
+        let event: Event = p.flags.has("resume") ? { kind: "resume" } : { kind: "approve" };
+        if (!p.flags.has("resume")) {
+          const { root, config } = project(io);
+          const id = args[0]!;
+          // With a plan folder, approval re-checks the design and binds the plan and its zone.
+          if (changeFiles(root, id).length) {
+            const check = await checkDesign(root, id, config);
+            if (!check.ok) throw new DevflowError("design_invalid", `Plan for ${id} does not pass the design checks: ${check.reason}`, check.details);
+            event = { kind: "approve", planDigest: planDigest(root, id), zone: check.zone! };
+          }
+        }
+        const t = apply(io, args[0]!, event);
         const { config } = project(io);
         io.out(JSON.stringify(nextStage(t, config)));
         return 0;
@@ -233,6 +253,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
             const a = r.attempts;
             io.out(`${r.id}  ${r.tier}  ${r.status}  next: ${next}  attempts: impl ${a.implement}, verify ${a.verify}${r.tracker ? `  [${r.tracker}]` : ""}`);
             for (const e of r.escalations) io.out(`    ${e.at}  ${e.kind} ${e.from} → ${e.to}${e.reason ? `: ${e.reason}` : ""}`);
+            const lock = readLock(root, r.id);
+            if (lock) io.out(`    run ${lock.runId} ${lock.status}${lock.pid ? ` pid ${lock.pid}` : ""}${lock.log ? `  log: ${lock.log}` : ""}`);
           }
         }
         return 0;
@@ -329,23 +351,13 @@ export async function run(argv: string[], io: Io): Promise<number> {
         let recorded = false;
         let out: Record<string, unknown>;
         if (which === "all") {
-          const { results, skipped } = await runAllGates(ctx);
-          out = { id: task.id, results, skipped };
-          if (nextStage(task, config).stage === "gates") {
-            // Refuse to record over state that changed while the gates were running.
-            const current = loadTask(root, task.id);
-            if (current.updatedAt !== task.updatedAt) {
-              throw new DevflowError("state_changed", `Task ${task.id} changed while gates were running; results not recorded.`);
-            }
-            const last = results[results.length - 1]!;
-            const summary = results.map((r) => `${r.name}:${r.outcome}${r.reason ? `(${r.reason})` : ""}`).join(", ");
-            const event = last.outcome === "pass"
-              ? { kind: "gates" as const, outcome: "pass" as const, results: summary }
-              : { kind: "gates" as const, outcome: last.outcome, gate: last.name, results: summary, ...(last.reason ? { reason: last.reason } : {}) };
-            const next = transition(task, event, config, io.now());
-            saveTask(root, next);
+          if (nextStage(task, workingConfig).stage === "gates") {
+            const g = await runGatesStage(root, task, workingConfig, { now: io.now, env: io.env });
+            out = { id: task.id, results: g.results, skipped: g.skipped, next: nextStage(g.task, workingConfig) };
             recorded = true;
-            out.next = nextStage(next, config);
+          } else {
+            const { results, skipped } = await runAllGates(ctx);
+            out = { id: task.id, results, skipped };
           }
         } else {
           out = { id: task.id, results: [await runGate(which as GateName, ctx)] };
@@ -355,6 +367,60 @@ export async function run(argv: string[], io: Io): Promise<number> {
         io.out(JSON.stringify(out));
         const results = out.results as { outcome: string }[];
         return results.every((r) => r.outcome === "pass") ? 0 : 1;
+      }
+      case "run": {
+        arity(args, 1, 1, "run <id> [--once] [--detach] [--timeout <seconds>]");
+        const id = args[0]!;
+        validateId(id);
+        const { root, config } = project(io);
+        loadTask(root, id);
+        const timeout = str(p, "timeout");
+        const timeoutSec = timeout === undefined ? 1800 : Number(timeout);
+        if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) throw new UsageError("--timeout must be a positive number of seconds");
+        if (p.flags.has("detach")) {
+          const passthrough = [...(p.flags.has("once") ? ["--once"] : []), ...(timeout ? ["--timeout", timeout] : [])];
+          const started = startDetached(root, id, passthrough, io.env);
+          io.out(JSON.stringify({ id, runId: started.runId, log: started.log, detached: true }));
+          return 0;
+        }
+        const runId = str(p, "run-id") ?? newRunId();
+        if (str(p, "run-id")) adoptLock(root, id, runId);
+        else acquireLock(root, id, { runId, status: "running", startedAt: io.now(), pid: process.pid });
+        try {
+          const reports = await runLoop(root, config, id, { now: io.now, env: io.env, timeoutMs: timeoutSec * 1000 }, {
+            once: p.flags.has("once"),
+            onStage: (r) => io.out(JSON.stringify(r)),
+          });
+          const final = nextStage(loadTask(root, id), config);
+          io.out(JSON.stringify({ id, done: true, stages: reports.length, next: final }));
+          const last = reports.at(-1);
+          return last && ["fail", "blocked"].includes(last.outcome) ? 1 : 0;
+        } finally {
+          releaseLock(root, id, runId);
+        }
+      }
+      case "log": {
+        arity(args, 1, 1, "log <id> [--follow]");
+        const id = args[0]!;
+        validateId(id);
+        const { root } = project(io);
+        const path = latestRunLog(root, id);
+        if (!path) throw new DevflowError("no_log", `Task ${id} has no run log yet.`);
+        let offset = 0;
+        const dump = () => {
+          const text = readFileSync(path, "utf8");
+          if (text.length > offset) io.out(text.slice(offset).replace(/\n$/, ""));
+          offset = text.length;
+        };
+        dump();
+        if (p.flags.has("follow")) {
+          while (readLock(root, id)) {
+            await new Promise((r) => setTimeout(r, 1000));
+            dump();
+          }
+          dump();
+        }
+        return 0;
       }
       case "hook": {
         arity(args, 1, 1, "hook pre-tool-use --scope-file <file>");

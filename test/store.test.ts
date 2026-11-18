@@ -66,7 +66,7 @@ test("schema-1 files are upgraded on load and saved as schema 2", () => {
   delete v1.counters;
   writeFileSync(file, JSON.stringify(v1));
   const loaded = loadTask(root, "t1");
-  assert.deepEqual([loaded.schema, loaded.counters], [2, { gatesFailedInARow: 0, reworks: 0 }]);
+  assert.deepEqual([loaded.schema, loaded.counters], [2, { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 }]);
   saveTask(root, loaded);
   assert.equal(JSON.parse(readFileSync(file, "utf8")).schema, 2);
 });

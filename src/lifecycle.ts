@@ -30,7 +30,7 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
 
 const HistoryEntrySchema = z.object({
   at: z.string(),
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate"]),
   stage: z.enum(STAGES).optional(),
   gate: z.string().optional(),
   results: z.string().optional(),
@@ -41,7 +41,7 @@ const HistoryEntrySchema = z.object({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0 };
+export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
 
 export const TaskStateSchema = z.strictObject({
   schema: z.literal(2),
@@ -57,12 +57,15 @@ export const TaskStateSchema = z.strictObject({
     implement: z.number().int().nonnegative(),
     verify: z.number().int().nonnegative(),
   }),
-  lastVerdict: z.strictObject({ outcome: z.string(), at: z.string() }).optional(),
+  lastVerdict: z.strictObject({ outcome: z.string(), at: z.string(), snapshot: z.string().optional() }).optional(),
+  planDigest: z.string().optional(),
+  gatesSnapshot: z.string().optional(),
   base: z.string().optional(),
   zone: z.array(z.string()).optional(),
   counters: z.strictObject({
     gatesFailedInARow: z.number().int().nonnegative(),
     reworks: z.number().int().nonnegative(),
+    staleEvidence: z.number().int().nonnegative().default(0),
   }),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -73,9 +76,10 @@ export type TaskState = z.infer<typeof TaskStateSchema>;
 export type GateOutcome = "pass" | "fail" | "blocked";
 
 export type Event =
-  | { kind: "complete"; stage: Stage; outcome: string; override?: string }
-  | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string }
-  | { kind: "approve" }
+  | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string }
+  | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
+  | { kind: "approve"; planDigest?: string; zone?: string[] }
+  | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
   | { kind: "resume" }
   | { kind: "tier"; tier: Tier }
   | { kind: "escalate"; reason: string };
@@ -199,9 +203,12 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     t.history.push({ at: now, kind: "escalate", from, to, reason });
   };
   /** Apply a gates result once the stage order has been checked. */
-  const applyGates = (outcome: GateOutcome, gate: string | undefined, reason: string | undefined) => {
+  const applyGates = (outcome: GateOutcome, gate: string | undefined, reason: string | undefined, snapshot?: string) => {
+    if (outcome !== "pass") delete t.gatesSnapshot;
     if (outcome === "pass") {
       t.counters.gatesFailedInARow = 0;
+      if (snapshot) t.gatesSnapshot = snapshot;
+      else delete t.gatesSnapshot;
       t.status = t.tier === "small" ? "DONE" : "GATES_PASSED";
     } else if (outcome === "blocked") {
       toHuman(reason ?? "gates_blocked");
@@ -235,7 +242,17 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
           `Record gates with "devflow gate ${task.id}", or use --override "<reason>" to accept them by hand.`,
         );
       }
-      if (stage === "gates" && event.override) {
+      if (stage === "verify" && outcome === "pass" && !event.override) {
+        if (!event.evidence || event.evidence !== task.gatesSnapshot) {
+          throw new DevflowError(
+            "verify_needs_run",
+            `Record verify with "devflow run ${task.id}", or use --override "<reason>" to accept it by hand.`,
+          );
+        }
+      }
+      if (stage === "verify" && event.override) {
+        t.history.push({ at: now, kind: "override", stage, outcome, reason: event.override });
+      } else if (stage === "gates" && event.override) {
         t.history.push({ at: now, kind: "override", stage, outcome, reason: event.override });
       } else {
         t.history.push({ at: now, kind: "complete", stage, outcome });
@@ -259,7 +276,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
           break;
         case "verify":
           t.attempts.verify++;
-          t.lastVerdict = { outcome, at: now };
+          t.lastVerdict = event.evidence ? { outcome, at: now, snapshot: event.evidence } : { outcome, at: now };
           if (outcome === "pass") t.status = "DONE";
           else if (outcome === "human") toHuman("verify_requested_human");
           else {
@@ -285,8 +302,30 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
         ...(event.reason ? { reason: event.reason } : {}),
         ...(event.results ? { results: event.results } : {}),
       });
-      applyGates(event.outcome, event.gate, event.reason);
+      applyGates(event.outcome, event.gate, event.reason, event.snapshot);
       if (t.status !== "HUMAN") delete t.humanReason;
+      return t;
+    }
+
+    case "invalidate": {
+      const allowed: TaskStatus[] = ["PLAN_APPROVED", "IMPLEMENTED", "GATES_PASSED"];
+      if (!allowed.includes(task.status)) {
+        throw new DevflowError("cannot_invalidate", `Task ${task.id} has no evidence to invalidate (status: ${task.status}).`);
+      }
+      t.counters.staleEvidence++;
+      t.history.push({ at: now, kind: "invalidate", to: event.to, reason: event.reason });
+      delete t.gatesSnapshot;
+      if (t.counters.staleEvidence >= 3) {
+        toHuman("evidence_unstable");
+        return t;
+      }
+      if (event.to === "approval") {
+        t.status = t.tier === "small" ? "NEW" : "DESIGNED";
+        delete t.planDigest;
+      } else {
+        t.status = "IMPLEMENTED";
+      }
+      delete t.humanReason;
       return t;
     }
 
@@ -295,6 +334,8 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
       }
       t.status = "PLAN_APPROVED";
+      if (event.planDigest) t.planDigest = event.planDigest;
+      if (event.zone) t.zone = event.zone;
       t.history.push({ at: now, kind: "approve" });
       return t;
     }

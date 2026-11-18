@@ -3,6 +3,24 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "test", "fixtures", "fake-cli.cjs");
+const AGENT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "test", "fixtures", "fake-agent.cjs");
+
+/** Fake `codex`/`claude` that act out devflow stages (see fixtures/fake-agent.cjs). */
+export function fakeAgentBin(dir: string, names: string[] = ["codex", "claude"]): string {
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "fake-agent.cjs");
+  copyFileSync(AGENT, script);
+  for (const name of names) {
+    if (process.platform === "win32") {
+      writeFileSync(join(dir, `${name}.cmd`), `@"${process.execPath}" "%~dp0fake-agent.cjs" %*\r\n`);
+    } else {
+      const p = join(dir, name);
+      writeFileSync(p, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+      chmodSync(p, 0o755);
+    }
+  }
+  return dir;
+}
 
 /** Create fake executables (`claude`, `codex`, …) in `dir`; returns `dir`. Windows: `.cmd` shims like npm's. */
 export function fakeBin(dir: string, names: string[]): string {

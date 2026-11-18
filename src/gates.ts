@@ -77,7 +77,7 @@ export function zoneGate(ctx: GateContext): GateResult {
     return blocked("zone", "no_zone", started);
   }
   const changes = changeSet(ctx.root, ctx.task.base!);
-  const outside = outsideZone(changes, zone);
+  const outside = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), zone);
   return outside.length
     ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside }, durationMs: Date.now() - started }
     : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
@@ -90,7 +90,7 @@ interface TestRun {
   log: string;
 }
 
-async function runCommand(ctx: GateContext, command: string, cwd: string, label: string): Promise<TestRun> {
+export async function runCommand(ctx: GateContext, command: string, cwd: string, label: string): Promise<TestRun> {
   const log = openLog(ctx.root, label, ctx.task.id);
   try {
     log.write(`$ ${command}\n# cwd: ${cwd}\n`);
@@ -139,7 +139,7 @@ function assertNoLinkedAncestors(projectDir: string, p: string): void {
 }
 
 /** Copy (or delete) project-relative paths from the working tree into the worktree project dir. Deletions first. */
-function applyPaths(root: string, projectDir: string, paths: string[]): void {
+export function applyPaths(root: string, projectDir: string, paths: string[]): void {
   const present = (p: string) => {
     try {
       return lstatSync(join(root, p));

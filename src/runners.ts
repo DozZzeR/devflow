@@ -22,6 +22,10 @@ export interface RunRequest {
   timeoutMs: number;
   task?: string;
   parentEnv?: NodeJS.ProcessEnv;
+  /** Where the role works (defaults to root). Logs always go to root/.devflow. */
+  cwd?: string;
+  /** Extra text written beside the log (for example the composed prompt). */
+  savePrompt?: boolean;
 }
 
 export interface RunResult {
@@ -74,14 +78,14 @@ export function claudeSettings(scopePath: string, node = process.execPath, cliJs
   return JSON.stringify({ hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command }] }] } }, null, 2);
 }
 
-export function codexInvocation(req: Pick<RunRequest, "role" | "write" | "root">, ignoreUserConfig: boolean): Invocation {
+export function codexInvocation(req: Pick<RunRequest, "role" | "write" | "root"> & { cwd?: string }, ignoreUserConfig: boolean): Invocation {
   const args = [
     "exec",
     "-m", req.role.model,
     "-s", req.write.length ? "workspace-write" : "read-only",
     "--skip-git-repo-check",
     "--ephemeral",
-    "-C", req.root,
+    "-C", req.cwd ?? req.root,
   ];
   if (ignoreUserConfig) args.push("--ignore-user-config");
   args.push("-");
@@ -190,6 +194,8 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
   if (req.role.runner === "command") commandInvocation(req.role.command, { model: "", prompt_file: "", cwd: "" });
   const log = openLog(req.root, req.roleName, req.task);
   const prefix = log.path.replace(/\.log$/, "");
+  const workDir = req.cwd ?? req.root;
+  if (req.savePrompt) writeFileSync(`${prefix}.prompt.txt`, req.prompt, { flag: "wx" });
 
   let inv: Invocation;
   let launched;
@@ -200,7 +206,7 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
       case "claude": {
         const scopePath = `${prefix}.scope.json`;
         const settingsPath = `${prefix}.settings.json`;
-        const scope: Scope = { root: resolve(req.root), write: req.write, bash: req.bash };
+        const scope: Scope = { root: resolve(workDir), write: req.write, bash: req.bash };
         writeFileSync(scopePath, JSON.stringify(scope, null, 2), { flag: "wx" });
         writeFileSync(settingsPath, claudeSettings(scopePath), { flag: "wx" });
         inv = claudeInvocation(req, settingsPath);
@@ -212,16 +218,16 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
       case "command": {
         const promptFile = `${prefix}.prompt.md`;
         writeFileSync(promptFile, req.prompt, { flag: "wx" });
-        inv = commandInvocation(req.role.command, { model: req.role.model, prompt_file: promptFile, cwd: req.root });
+        inv = commandInvocation(req.role.command, { model: req.role.model, prompt_file: promptFile, cwd: workDir });
         break;
       }
     }
     const env = buildChildEnv(req.parentEnv ?? process.env, names);
-    before = new Map(req.expect.map((p) => [p, snapshot(req.root, p)] as const));
+    before = new Map(req.expect.map((p) => [p, snapshot(workDir, p)] as const));
     launched = await launch({
       command: inv.command,
       args: inv.args,
-      cwd: req.root,
+      cwd: workDir,
       env,
       stdin: req.prompt,
       timeoutMs: req.timeoutMs,
@@ -230,7 +236,7 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
   } finally {
     log.close();
   }
-  const missingOutputs = checkOutputs(req.root, req.expect, before);
+  const missingOutputs = checkOutputs(workDir, req.expect, before);
   const result: RunResult = {
     ok: launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
     role: req.roleName,
