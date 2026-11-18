@@ -48,13 +48,13 @@ export const ConfigSchema = z.strictObject({
     .strictObject({
       claude: z.strictObject({ use_api_key: z.boolean().default(false) }).default({ use_api_key: false }),
       codex: z
-        .strictObject({ use_api_key: z.boolean().default(false), ignore_user_config: z.boolean().default(true) })
-        .default({ use_api_key: false, ignore_user_config: true }),
+        .strictObject({ use_api_key: z.boolean().default(false), ignore_user_config: z.boolean().default(false) })
+        .default({ use_api_key: false, ignore_user_config: false }),
       env: z
         .strictObject({ pass: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_()]*$/, "expected a variable name")).default([]) })
         .default({ pass: [] }),
     })
-    .default({ claude: { use_api_key: false }, codex: { use_api_key: false, ignore_user_config: true }, env: { pass: [] } }),
+    .default({ claude: { use_api_key: false }, codex: { use_api_key: false, ignore_user_config: false }, env: { pass: [] } }),
 });
 
 export type Role = z.infer<typeof RoleSchema>;

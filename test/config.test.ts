@@ -102,8 +102,9 @@ test("init picks runners from detected CLIs or an override", () => {
 });
 
 test("runners section: accepted with defaults, unknown keys rejected", () => {
-  const c = parseConfig({ ...base(), runners: { codex: { ignore_user_config: false } } });
-  assert.deepEqual([c.runners.codex.ignore_user_config, c.runners.codex.use_api_key, c.runners.claude.use_api_key], [false, false, false]);
+  const c = parseConfig({ ...base(), runners: { codex: { ignore_user_config: true } } });
+  assert.deepEqual([c.runners.codex.ignore_user_config, c.runners.codex.use_api_key, c.runners.claude.use_api_key], [true, false, false]);
+  assert.equal(parseConfig(base()).runners.codex.ignore_user_config, false);
   assert.deepEqual(parseConfig(base()).runners.env.pass, []);
   assert.ok(problems({ ...base(), runners: { codex: { turbo: true } } }).includes("runners.codex.turbo: unknown field"));
 });

@@ -38,12 +38,12 @@
 
 ### Requirement: Runner settings
 
-The configuration SHALL accept an optional `runners` section with per-runner settings, strictly validated like the rest of the file: `runners.claude.use_api_key` (boolean, default false), `runners.codex.use_api_key` (boolean, default false), `runners.codex.ignore_user_config` (boolean, default true) and `runners.env.pass` (list of environment variable names, default empty).
+The configuration SHALL accept an optional `runners` section with per-runner settings, strictly validated like the rest of the file: `runners.claude.use_api_key` (boolean, default false), `runners.codex.use_api_key` (boolean, default false), `runners.codex.ignore_user_config` (boolean, default false) and `runners.env.pass` (list of environment variable names, default empty).
 
 #### Scenario: Runner settings accepted
 
-- **WHEN** the config contains `"runners": { "codex": { "ignore_user_config": false } }`
-- **THEN** it loads and the codex runner does not pass `--ignore-user-config`
+- **WHEN** the config contains `"runners": { "codex": { "ignore_user_config": true } }`
+- **THEN** it loads and the codex runner passes `--ignore-user-config`
 
 #### Scenario: Unknown runner setting
 
