@@ -94,6 +94,30 @@ export function addWorktree(root: string, base: string): { path: string; project
 
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+/**
+ * Cut a worktree loose from the repository: drop its `.git` link so commands run inside it cannot reach
+ * the shared object store, history or other branches (used for the isolated verifier copy).
+ */
+export function detachWorktreeGit(path: string): void {
+  rmSync(join(path, ".git"), { force: true, recursive: true });
+}
+
+/** Remove a detached worktree directory and drop its stale registration. */
+export function removeDetached(root: string, path: string): boolean {
+  for (let attempt = 0; attempt < 3 && existsSync(path); attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch {
+      sleepSync(500 * (attempt + 1));
+    }
+  }
+  if (existsSync(path)) return false;
+  rmSync(resolve(path, ".."), { recursive: true, force: true });
+  const info = repoInfo(root);
+  if (info) git(info.toplevel, ["worktree", "prune"], { allowFail: true }); // only drops entries whose directory is gone
+  return true;
+}
+
 /** Remove one worktree (never a repository-wide prune). Returns false if it could not be removed. */
 export function removeWorktree(root: string, path: string): boolean {
   const info = repoInfo(root);

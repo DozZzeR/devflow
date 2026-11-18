@@ -48,6 +48,7 @@ process.stdin.on("end", () => {
     if (env.FAKE_VERIFY_EDIT) write("src/math.js", "// verifier was here\n");
     const designVisible = fs.existsSync(`openspec/changes/${id}/design.md`) ? "yes" : "no";
     const leaked = prompt.includes("SECRET-DESIGN-REASONING") ? "yes" : "no";
+    console.log(`git-visible: ${fs.existsSync(".git") ? "yes" : "no"}`);
     write(".devflow-verdict.md", `VERDICT: ${env.FAKE_VERDICT || "PASS"}\n\ndesign-visible: ${designVisible}\nreasoning-in-prompt: ${leaked}\n`);
   }
   console.log("fake agent done");

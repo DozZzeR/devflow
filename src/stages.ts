@@ -5,7 +5,7 @@ import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
 import { checkDesign } from "./artifacts.js";
 import { applyPaths, gateConfig, runAllGates, runCommand, type GateResult } from "./gates.js";
-import { addWorktree, changeSet, removeWorktree } from "./git.js";
+import { addWorktree, changeSet, detachWorktreeGit, removeDetached } from "./git.js";
 import { nextStage, roleFor, transition, type Event, type NextInfo, type Stage, type TaskState } from "./lifecycle.js";
 import { block, composePrompt, loadTemplate, section, type PromptStage } from "./prompts.js";
 import { runRole, type RunResult } from "./runners.js";
@@ -77,12 +77,18 @@ function gatesSummary(task: TaskState): string {
 /** Record the result of all gates; shared by `devflow gate` and the run loop. */
 export async function runGatesStage(root: string, task: TaskState, workingConfig: Config, io: StageIo): Promise<{ task: TaskState; results: GateResult[]; skipped: string[]; configSource: string }> {
   const { config, source } = gateConfig(root, task.base, workingConfig);
+  const before = task.base ? snapshotDigest(root, task.base, config) : undefined;
   const { results, skipped } = await runAllGates({ root, task, config, parentEnv: io.env });
-  const last = results[results.length - 1]!;
+  let last = results[results.length - 1]!;
+  if (last.outcome === "pass" && before !== snapshotDigest(root, task.base!, config)) {
+    // The files changed while the gates were running: what passed is not what is on disk now.
+    last = { ...last, outcome: "blocked", reason: "tree_changed_during_gates" };
+    results[results.length - 1] = last;
+  }
   const summary = results.map((r) => `${r.name}:${r.outcome}${r.reason ? `(${r.reason})` : ""}`).join(", ");
   let event: Event;
   if (last.outcome === "pass") {
-    event = { kind: "gates", outcome: "pass", results: summary, snapshot: snapshotDigest(root, task.base!, config) };
+    event = { kind: "gates", outcome: "pass", results: summary, snapshot: before! };
   } else {
     event = { kind: "gates", outcome: last.outcome, gate: last.name, results: summary, ...(last.reason ? { reason: last.reason } : {}) };
   }
@@ -95,7 +101,30 @@ function role(stage: Stage, task: TaskState, config: Config) {
   return r;
 }
 
-async function runModel(
+async function runModel(...a: Parameters<typeof runModelRaw>): Promise<RunResult> {
+  try {
+    return await runModelRaw(...a);
+  } catch (e) {
+    const [, task, config, , , roleStage] = a;
+    const r = roleFor(roleStage, task.tier, config);
+    return {
+      ok: false,
+      role: a[4],
+      runner: r?.runner ?? "command",
+      model: r?.model ?? "",
+      exitCode: null,
+      durationMs: 0,
+      timedOut: false,
+      missingOutputs: [],
+      scope: "advisory",
+      apiKeyEnv: "stripped",
+      log: "",
+      error: e instanceof DevflowError ? e.reason : (e as Error).message,
+    } as RunResult;
+  }
+}
+
+async function runModelRaw(
   root: string,
   task: TaskState,
   config: Config,
@@ -118,12 +147,16 @@ async function runModel(
     ...(extra.round ? { round: extra.round } : {}),
     ...(extra.previousVerdict ? { previousVerdict: extra.previousVerdict } : {}),
   });
+  const mustHave =
+    extra.round && extra.round >= 2 && !prompt.includes("ONLY high-severity")
+      ? `\n\nThis is round ${extra.round}. Report ONLY high-severity findings and regressions of findings from the previous verdict below.\n\n## Previous verdict\n\n${extra.previousVerdict ?? ""}\n`
+      : "";
   return runRole({
     root,
     roleName: stage,
     role: role(roleStage, task, config),
     config,
-    prompt,
+    prompt: prompt + mustHave,
     write,
     bash: extra.bash ?? [],
     expect,
@@ -264,6 +297,7 @@ async function runVerify(
   let failure: string | undefined;
   try {
     wt = addWorktree(root, task.base!);
+    detachWorktreeGit(wt.path);
     applyPaths(root, wt.projectDir, changes);
     rmSync(join(wt.projectDir, "openspec", "changes", id, "design.md"), { force: true });
     rmSync(join(wt.projectDir, DEVFLOW_DIR), { recursive: true, force: true });
@@ -288,7 +322,7 @@ async function runVerify(
   } catch (e) {
     failure = e instanceof DevflowError ? e.reason : "verify_error";
   } finally {
-    if (wt && !removeWorktree(root, wt.path)) failure = failure ?? "cleanup_failed";
+    if (wt && !removeDetached(root, wt.path)) failure = failure ?? "cleanup_failed";
   }
 
   const verdict = failure ? undefined : verdictOf(read(verdictPath));

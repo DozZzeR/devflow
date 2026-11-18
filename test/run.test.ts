@@ -52,6 +52,7 @@ test("medium task: explore + design, stop for approval; approve binds plan; then
   const verdict = readFileSync(join(root, ".devflow", "runs", "t1", "verdict.md"), "utf8");
   assert.match(verdict, /design-visible: no/);
   assert.match(verdict, /reasoning-in-prompt: no/);
+  assert.match(readFileSync(join(root, ".devflow", "runs", "t1", "logs", "verify-1.log"), "utf8"), /git-visible: no/);
   const verifyPrompt = readdirSync(prompts).find((f) => f.startsWith("VERIFY"));
   assert.ok(verifyPrompt);
   const vp = readFileSync(join(prompts, verifyPrompt!), "utf8");
@@ -127,6 +128,20 @@ test("a rejected plan goes back to design; a revision that changes nothing fails
   const last = readFileSync(join(prompts, designPrompts.sort().at(-1)!), "utf8");
   assert.match(last, /Cover negative numbers/);
   write(root, "openspec/changes/t8/tasks.md", "- [ ] 1.1 Changed by hand\n");
+});
+
+test("a role whose CLI cannot be launched is a failed stage, not a crash", () => {
+  const { root, devflow, lines } = setup();
+  const cfgPath = join(root, ".devflow", "config.json");
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+  cfg.roles.explore = { runner: "command", model: "x", command: "definitely-not-installed-cli {model}" };
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  devflow("start", "t9", "Add mul");
+  const r = devflow("run", "t9");
+  assert.equal(r.code, 1, r.err);
+  const first = lines(r.out)[0];
+  assert.deepEqual([first.stage, first.outcome], ["explore", "fail"]);
+  assert.equal(first.details.error, "cli_not_found");
 });
 
 test("manual verify pass needs an override", () => {

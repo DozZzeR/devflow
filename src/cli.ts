@@ -213,6 +213,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
         if (!p.flags.has("resume") && !rejectReason) {
           const { root, config } = project(io);
           const id = args[0]!;
+          validateId(id);
+          loadTask(root, id);
           // With a plan folder, approval re-checks the design and binds the plan and its zone.
           if (changeFiles(root, id).length) {
             const check = await checkDesign(root, id, config);

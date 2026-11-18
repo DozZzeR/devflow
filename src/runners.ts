@@ -42,6 +42,8 @@ export interface RunResult {
   log: string;
   /** The timeout kill could not be confirmed; descendants may still be running. */
   killFailed?: boolean;
+  /** Set when the role could not be launched at all (for example cli_not_found). */
+  error?: string;
 }
 
 /** What a runner needs to launch: command, args and how the scope is applied. */
