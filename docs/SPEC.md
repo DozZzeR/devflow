@@ -296,6 +296,12 @@ openspec/
 
 ### 8.1 CLI
 
+Статус (`add-stage-run`): реализованы `run [--once] [--detach]`, `log [--follow]`,
+`approve --reject`; план всегда в `openspec/changes/<id>/`, verify в изолированном
+worktree, привязка плана (отпечаток при approve) и доказательств (снимок кода) —
+см. `openspec/specs/stage-execution` и `change-artifacts`. Актуальный список
+команд — в README.
+
 ```
 devflow init                      # создать .devflow/config.json, проверить раннеры
 devflow start <id> "<задача>" [--tier small|medium|complex] [--tracker GF-123]
