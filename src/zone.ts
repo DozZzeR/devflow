@@ -5,7 +5,7 @@ import { matchesAny } from "./glob.js";
 /** Same rules as runner write scopes: relative, no "..", no drive prefix. */
 export function validateZone(globs: string[]): void {
   for (const g of globs) {
-    if (!g || g.startsWith("/") || g.startsWith("\\") || /^[A-Za-z]:/.test(g) || g.split(/[\\/]/).includes("..")) {
+    if (!g || g.startsWith("/") || g.startsWith("\\") || /^[A-Za-z]:/.test(g) || g.includes("..")) {
       throw new DevflowError("invalid_zone", `Zone glob "${g}" must be relative to the project and must not contain "..".`);
     }
   }

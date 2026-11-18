@@ -81,7 +81,14 @@ export function addWorktree(root: string, base: string): { path: string; project
   if (!info) throw new DevflowError("no_git", `${root} is not inside a git repository.`);
   const parent = mkdtempSync(join(tmpdir(), "devflow-wt-"));
   const path = join(parent, "wt");
-  git(info.toplevel, ["worktree", "add", "--detach", path, base]);
+  try {
+    git(info.toplevel, ["worktree", "add", "--detach", path, base]);
+  } catch (e) {
+    // A partial add must not leave a registered worktree or a temp directory behind.
+    git(info.toplevel, ["worktree", "remove", "--force", path], { allowFail: true });
+    rmSync(parent, { recursive: true, force: true });
+    throw e;
+  }
   return { path, projectDir: info.prefix ? join(path, info.prefix) : path };
 }
 

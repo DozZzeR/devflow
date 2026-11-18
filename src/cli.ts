@@ -7,7 +7,7 @@ import { doctor } from "./doctor.js";
 import { runHook } from "./hook.js";
 import { resolveCommand } from "./proc.js";
 import { runRole } from "./runners.js";
-import { GATE_NAMES, runAllGates, runGate, type GateName } from "./gates.js";
+import { GATE_NAMES, gateConfig, runAllGates, runGate, type GateName } from "./gates.js";
 import { git, headCommit, repoInfo } from "./git.js";
 import { validateZone, zoneFromDesign } from "./zone.js";
 import { DevflowError, UsageError } from "./errors.js";
@@ -322,8 +322,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
         if (which !== "all" && !(GATE_NAMES as readonly string[]).includes(which)) {
           throw new UsageError(`Gate must be one of: ${GATE_NAMES.join(", ")}, all`);
         }
-        const { root, config } = project(io);
+        const { root, config: workingConfig } = project(io);
         const task = loadTask(root, args[0]!);
+        const { config, source: configSource } = gateConfig(root, task.base, workingConfig);
         const ctx = { root, task, config, parentEnv: io.env };
         let recorded = false;
         let out: Record<string, unknown>;
@@ -344,6 +345,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           out = { id: task.id, results: [await runGate(which as GateName, ctx)] };
         }
         out.recorded = recorded;
+        out.configSource = configSource;
         io.out(JSON.stringify(out));
         const results = out.results as { outcome: string }[];
         return results.every((r) => r.outcome === "pass") ? 0 : 1;

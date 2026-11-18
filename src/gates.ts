@@ -1,6 +1,6 @@
 import { copyFileSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Config } from "./config.js";
+import { parseConfig, type Config } from "./config.js";
 import { DevflowError } from "./errors.js";
 import { addWorktree, changeSet, git, removeWorktree, repoInfo } from "./git.js";
 import { matchesAny } from "./glob.js";
@@ -35,6 +35,22 @@ const blocked = (name: GateName, reason: string, started: number, details?: unkn
   durationMs: Date.now() - started,
   ...(details === undefined ? {} : { details }),
 });
+
+/**
+ * Config the gates trust: the one committed at the task base, so a role cannot change the test command,
+ * test paths or setup that the gates will execute. Falls back to the working-tree config when the base has none.
+ */
+export function gateConfig(root: string, base: string | undefined, workingConfig: Config): { config: Config; source: "base" | "working_tree" } {
+  const info = repoInfo(root);
+  if (!info || !base) return { config: workingConfig, source: "working_tree" };
+  const r = git(root, ["show", `${base}:${info.prefix}.devflow/config.json`], { allowFail: true });
+  if (r.code !== 0) return { config: workingConfig, source: "working_tree" };
+  try {
+    return { config: parseConfig(JSON.parse(r.stdout)), source: "base" };
+  } catch {
+    throw new DevflowError("invalid_config", "The .devflow/config.json committed at the task base is invalid.");
+  }
+}
 
 /** Common preconditions: git present and a base recorded. */
 function precheck(name: GateName, ctx: GateContext, started: number): GateResult | undefined {
@@ -99,11 +115,44 @@ export async function testsGate(ctx: GateContext): Promise<GateResult> {
     : { name: "tests", outcome: "fail", reason: "tests_failed", details: { exitCode: r.exitCode, log: r.log }, durationMs: Date.now() - started };
 }
 
-/** Copy (or delete) project-relative paths from the working tree into the worktree project dir. */
+/** Refuse a destination whose existing ancestors (inside the worktree) are links, so writes cannot escape. */
+function assertNoLinkedAncestors(projectDir: string, p: string): void {
+  let dir = projectDir;
+  for (const part of p.split("/").slice(0, -1)) {
+    dir = join(dir, part);
+    let st;
+    try {
+      st = lstatSync(dir);
+    } catch {
+      return; // the rest does not exist yet and will be created as plain directories
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new DevflowError("unsafe_path", `${p}: ${dir} in the rollback worktree is a link or not a directory.`);
+    }
+  }
+}
+
+/** Copy (or delete) project-relative paths from the working tree into the worktree project dir. Deletions first. */
 function applyPaths(root: string, projectDir: string, paths: string[]): void {
-  for (const p of paths) {
+  const present = (p: string) => {
+    try {
+      return lstatSync(join(root, p));
+    } catch {
+      return undefined;
+    }
+  };
+  const ordered = [...paths.filter((p) => !present(p)), ...paths.filter((p) => present(p))];
+  for (const p of ordered) {
+    assertNoLinkedAncestors(projectDir, p);
     const src = join(root, p);
     const dst = join(projectDir, p);
+    let dstStat;
+    try {
+      dstStat = lstatSync(dst);
+    } catch {
+      dstStat = undefined;
+    }
+    if (dstStat?.isSymbolicLink()) rmSync(dst, { force: true }); // replace the link itself, never follow it
     let st;
     try {
       st = lstatSync(src);
@@ -167,7 +216,7 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
       if (!isRed(ctx.config, red)) return blocked("rollback", "unexpected_exit_code", started, { exitCode: red.exitCode, logs });
 
       applyPaths(ctx.root, wt!.projectDir, prod);
-      if (setup && prod.some((p) => matchesAny(p, ctx.config.test.setup_inputs))) {
+      if (setup && changes.some((p) => matchesAny(p, ctx.config.test.setup_inputs))) {
         const s2 = await step(setup, "gate_rollback_setup");
         if (s2.exitCode !== 0) return blocked("rollback", "setup_failed", started, { logs });
       }
@@ -181,8 +230,15 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
   } catch (e) {
     result = blocked("rollback", e instanceof DevflowError ? e.reason : "rollback_error", started, { message: (e as Error).message, logs });
   } finally {
-    if (wt && !removeWorktree(ctx.root, wt.path)) {
-      return blocked("rollback", "cleanup_failed", started, { path: wt.path, logs });
+    const pending = wt?.path;
+    if (pending) {
+      let removed = false;
+      try {
+        removed = removeWorktree(ctx.root, pending);
+      } catch {
+        removed = false;
+      }
+      if (!removed) return blocked("rollback", "cleanup_failed", started, { path: pending, logs });
     }
   }
   const statusAfter = git(ctx.root, ["status", "--porcelain", "-z"]).stdout;
@@ -192,14 +248,20 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
   return result;
 }
 
+/** Run one gate; any operational error becomes `blocked`, never an exception. */
 export async function runGate(name: GateName, ctx: GateContext): Promise<GateResult> {
-  switch (name) {
-    case "zone":
-      return zoneGate(ctx);
-    case "tests":
-      return testsGate(ctx);
-    case "rollback":
-      return rollbackGate(ctx);
+  const started = Date.now();
+  try {
+    switch (name) {
+      case "zone":
+        return zoneGate(ctx);
+      case "tests":
+        return await testsGate(ctx);
+      case "rollback":
+        return await rollbackGate(ctx);
+    }
+  } catch (e) {
+    return blocked(name, e instanceof DevflowError ? e.reason : "gate_error", started, { message: (e as Error).message });
   }
 }
 

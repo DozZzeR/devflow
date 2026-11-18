@@ -117,3 +117,24 @@ test("tests gate: a quoted command works and a timeout is blocked", async () => 
   const slow = await testsGate(ctx(root, base, { config: (c) => { c.test.command = 'node -e "setTimeout(()=>{},60000)"'; c.test.timeout_seconds = 2; } }));
   assert.deepEqual([slow.outcome, slow.reason], ["blocked", "test_run_error"]);
 });
+
+test("gates trust the config committed at the base, not a role-edited working copy", async () => {
+  const { root, base } = gitProject();
+  const { gateConfig } = await import("../src/gates.js");
+  const working = loadConfig(root);
+  working.test.command = "node -e \"process.exit(0)\"";
+  const trusted = gateConfig(root, base, working);
+  assert.deepEqual([trusted.source, trusted.config.test.command], ["base", "node check.js"]);
+  const plain = tempDir();
+  initProject(plain);
+  assert.equal(gateConfig(plain, "abc", working).source, "working_tree");
+});
+
+test("operational errors become blocked results instead of exceptions", async () => {
+  const { runGate } = await import("../src/gates.js");
+  const { root } = gitProject();
+  const r = await runGate("rollback", ctx(root, "0000000000000000000000000000000000000000"));
+  assert.equal(r.outcome, "blocked");
+  const z = await runGate("zone", ctx(root, "0000000000000000000000000000000000000000", { zone: ["**"] }));
+  assert.equal(z.outcome, "blocked");
+});

@@ -194,6 +194,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     const from = t.tier;
     const to: Tier = from === "small" ? "medium" : "complex";
     applyTierChange(t, to);
+    t.attempts = { ...ZERO_ATTEMPTS };
     t.history.push({ at: now, kind: "escalate", from, to, reason });
   };
   /** Apply a gates result once the stage order has been checked. */

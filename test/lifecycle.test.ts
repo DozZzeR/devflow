@@ -187,3 +187,10 @@ test("manual gates ok needs an override and is recorded as such", () => {
   assert.deepEqual([o.history.at(-1)!.kind, o.history.at(-1)!.reason], ["override", "checked by hand"]);
   rejects(() => transition(task("small"), { kind: "gates", outcome: "pass" }, cfg, NOW), "stage_not_next");
 });
+
+test("automatic escalation resets every attempt counter", () => {
+  const c = config({ limits: { verify: 5 } });
+  const toVerify = [ok("implement"), ok("gates")];
+  const t = play(task("medium"), c, ok("explore"), ok("design"), { kind: "approve" }, ...toVerify, verify("rework"), ...toVerify, verify("rework"));
+  assert.deepEqual(t.attempts, { explore: 0, design: 0, implement: 0, verify: 0 });
+});

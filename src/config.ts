@@ -49,7 +49,7 @@ export const ConfigSchema = z.strictObject({
         "requirements*.txt", "pyproject.toml", "poetry.lock", "uv.lock", "Pipfile.lock",
       ]),
     red_exit_codes: z.array(z.number().int()).min(1).optional(),
-    timeout_seconds: positiveInt.default(1800),
+    timeout_seconds: positiveInt.max(86_400).default(1800),
   }),
   openspec: z.strictObject({ cli: z.enum(["auto", "on", "off"]) }).optional(),
   logs: z.strictObject({ keep: positiveInt }).optional(),
