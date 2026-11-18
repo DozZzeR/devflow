@@ -8,7 +8,8 @@ devflow can record stages, run one role by hand (`exec-role`) and check changes 
 
 - Built-in stage prompts for `explore`, `design`, `implement`, `verify` (and `small`), each with a fixed input set, write scope and expected outputs; written in the configured artifact language; overridable per project in `.devflow/prompts/<stage>.md`.
 - Change artifacts in OpenSpec format: the design stage writes `openspec/changes/<task-id>/` (proposal, design with `## Impact zone` and `## Test plan`, tasks, spec deltas), whether or not OpenSpec is installed; `openspec validate --strict` runs when the CLI is available; the task zone is read from the design after the stage.
-- Verify reads a narrowed context: specs deltas, tasks, `## Test plan` only, change set and gate results, never the rest of the design or implementer logs; its verdict file is parsed into `pass | rework | human` and bound to a hash of the change set; a second verify round focuses on high-severity findings and on regressions of round-1 findings.
+- Verify runs in an isolated temporary worktree (base + change set, without the design reasoning, exploration notes or devflow state) with a narrowed prompt; its verdict is parsed into `pass | rework | human` and bound to the same snapshot digest as the passing gates; a second verify round focuses on high-severity findings and on regressions of round-1 findings.
+- Plan approval binds the plan: approval re-checks the design, sets the zone and records a digest; later plan edits require approval again.
 - `devflow run <id> [--once]`: runs the next stage (or stages until a human stop, a failure or `DONE`), records outcomes through the lifecycle, runs gates at the gates stage.
 - Background runs: `devflow run <id> --detach` returns a run id immediately; `devflow log <id> [--follow]` shows the live run log; `devflow status` shows whether a run is active. At most one active run per task.
 
@@ -21,7 +22,8 @@ devflow can record stages, run one role by hand (`exec-role`) and check changes 
 
 ### Modified Capabilities
 
-None. (`task-lifecycle`, `runners`, `gates` are used as specified.)
+- `gates`: the zone gate accepts the task's own plan folder; passing gates record the snapshot they checked.
+- `task-lifecycle`: verify pass by hand needs an override; returns to approval or gates when evidence goes stale, bounded.
 
 ## Impact
 

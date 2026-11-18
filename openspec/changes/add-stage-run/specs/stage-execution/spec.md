@@ -1,12 +1,12 @@
 ## Purpose
 
-Defines how devflow turns a task's next stage into one role run: which prompt, inputs, write scope and expected outputs each stage gets, how the run's result becomes a lifecycle outcome, and how stages run in the foreground or as a background run that can be watched.
+Defines how devflow turns a task's next stage into one role run: which prompt, inputs, write scope and expected outputs each stage gets, how the run's result becomes a lifecycle outcome, how evidence (approved plan, gate results, verdict) is bound to the exact code it judged, and how stages run in the foreground or as a watchable background run.
 
 ## ADDED Requirements
 
 ### Requirement: Stage contracts
 
-Each model stage SHALL run with a fixed contract. explore: read-only except `.devflow/runs/<id>/facts.md`, which it must produce. design: writes only `openspec/changes/<id>/**` and must produce `proposal.md`, `design.md` and `tasks.md` there. implement (and small): writes only the task zone plus the change's `tasks.md`, may run the test command. verify: writes only `.devflow/runs/<id>/verdict.md`, which it must produce.
+Each model stage SHALL run with a fixed contract. explore: read-only except `.devflow/runs/<id>/facts.md`, which it must produce. design: writes only `openspec/changes/<id>/**` and must produce fresh `proposal.md`, `design.md`, `tasks.md` and every spec delta present. implement (and small): writes only the task zone plus the change's `tasks.md`, may run the test command. verify: see Verify isolation.
 
 #### Scenario: Design cannot touch source
 
@@ -18,9 +18,14 @@ Each model stage SHALL run with a fixed contract. explore: read-only except `.de
 - **WHEN** explore exits 0 without writing `facts.md`
 - **THEN** the stage is recorded as `explore fail`
 
+#### Scenario: Stale spec delta
+
+- **WHEN** a redesign rewrites the three Markdown files but leaves an old spec delta untouched
+- **THEN** the design stage fails with reason `stale_delta`
+
 ### Requirement: Prompt composition
 
-Each stage prompt SHALL be built from a built-in template for that stage, the task description and tracker reference, the artifact language from the configuration, and only the inputs listed for that stage. A project file `.devflow/prompts/<stage>.md` SHALL replace the built-in template for that stage. The composed prompt SHALL be saved next to the run log.
+Each stage prompt SHALL be built from a built-in template for that stage, the task description and tracker reference, the artifact language, and only the inputs listed for that stage. A project file `.devflow/prompts/<stage>.md` SHALL replace the built-in template. The composed prompt SHALL be saved beside the run log.
 
 #### Scenario: Project override
 
@@ -32,14 +37,36 @@ Each stage prompt SHALL be built from a built-in template for that stage, the ta
 - **WHEN** any stage runs
 - **THEN** the exact prompt sent is stored beside that run's log
 
-### Requirement: Verify context
+### Requirement: Plan approval binding
 
-The verify prompt SHALL include the change's spec deltas, `tasks.md`, only the `## Test plan` section of `design.md`, the current change set and the latest gate results, and MUST NOT include the rest of `design.md`, `facts.md` or logs of other roles. In a second verify round it SHALL also include the previous verdict and instruct the verifier to report only high-severity findings and regressions of earlier findings.
+On `devflow approve` the system SHALL re-run the design checks, set the task zone from `## Impact zone`, and record a digest of the change folder excluding checkbox state in `tasks.md`. Before implement, gates and verify run, the digest SHALL be recomputed; on mismatch the task MUST return to plan approval with reason `plan_changed`.
 
-#### Scenario: Design reasoning hidden
+#### Scenario: Plan edited after approval
 
-- **WHEN** `design.md` contains a `## Decisions` section
-- **THEN** the verify prompt does not contain that section's text
+- **WHEN** `design.md` changes after `devflow approve`
+- **THEN** the next `devflow run` stops with `plan_changed` and waits for approval again
+
+### Requirement: Evidence snapshot
+
+Gate results and verdicts SHALL be bound to a snapshot digest computed over the task base, the effective gate configuration and, for every path in the change set, its path, file mode and content (or deletion). A pass verdict counts only if its snapshot equals the snapshot of the latest passing gates and of the working tree at recording time.
+
+#### Scenario: Edit between gates and verify
+
+- **WHEN** a file changes after gates passed and before verify runs
+- **THEN** verify does not run and the task returns to the gates stage with reason `snapshot_changed`
+
+### Requirement: Verify isolation
+
+Verify SHALL run in a temporary worktree built from the task base plus the change set, without `design.md` beyond its `## Test plan` (provided in the prompt), without `facts.md` and without `.devflow/runs/`. It writes only `verdict.md` in that worktree, which devflow copies back to `.devflow/runs/<id>/`. The worktree is removed afterwards; edits it made are discarded.
+
+#### Scenario: Verifier edits code
+
+- **WHEN** the verifier modifies `src/a.ts` inside its worktree
+- **THEN** the user's working tree is unchanged and the edit is discarded
+
+### Requirement: Verify rounds
+
+In a second verify round the prompt SHALL include the previous verdict and instruct the verifier to report only high-severity findings and regressions of earlier findings. The previous verdict is archived as `verdict-round<n>.md` before the next round.
 
 #### Scenario: Second round is narrowed
 
@@ -48,30 +75,30 @@ The verify prompt SHALL include the change's spec deltas, `tasks.md`, only the `
 
 ### Requirement: Verdict interpretation
 
-After verify, the system SHALL read the first line of `verdict.md`: `VERDICT: PASS` → `pass`, `VERDICT: REWORK` → `rework`, `VERDICT: HUMAN` → `human`; anything else → `human` with reason `unreadable_verdict`. The verdict SHALL record a hash of the change set's content at verify time; a `pass` whose hash no longer matches the working tree MUST NOT finish the task.
+After verify the system SHALL read the first line of `verdict.md`: `VERDICT: PASS` → `pass`, `VERDICT: REWORK` → `rework`, `VERDICT: HUMAN` → `human`; anything else, a missing verdict or a failed run → `human` with a reason. `devflow complete <id> verify pass` MUST require `--override "<reason>"`, recorded in history.
 
 #### Scenario: Rework verdict
 
 - **WHEN** `verdict.md` starts with `VERDICT: REWORK`
 - **THEN** the task records `verify rework` and returns to implement
 
-#### Scenario: Stale pass
+#### Scenario: Manual pass needs override
 
-- **WHEN** a pass verdict was recorded and files changed afterwards before the task was closed
-- **THEN** `devflow run` reports `stale_verdict` and reruns gates and verify instead of finishing
+- **WHEN** the user runs `devflow complete t1 verify pass` without `--override`
+- **THEN** the command fails with `verify_needs_run`
 
-### Requirement: Stage outcomes
+### Requirement: Stale evidence limit
 
-The system SHALL record `ok` for a model stage whose run succeeded (exit 0, outputs fresh, stage checks passed) and `fail` otherwise. For design, stage checks are: required files present, `## Impact zone` parsable, and `openspec validate <id> --strict` passing when the OpenSpec CLI is available. After a successful design the task zone SHALL be set from `## Impact zone`.
+Returning to gates or approval because of `snapshot_changed` or `plan_changed` SHALL be counted per task; after 3 such returns the task MUST go to `HUMAN` with reason `evidence_unstable`.
 
-#### Scenario: Invalid change
+#### Scenario: Endless edits
 
-- **WHEN** design writes files but `openspec validate --strict` fails
-- **THEN** the stage is recorded as `design fail` and the validation output is in the log
+- **WHEN** the snapshot changes before verify for the third time
+- **THEN** the task goes to `HUMAN` with `evidence_unstable`
 
 ### Requirement: Run loop
 
-`devflow run <id>` SHALL execute the next stage and continue with following stages until the task waits for a human (plan approval, `HUMAN`), a stage fails, or the task is `DONE`; `--once` SHALL execute exactly one stage. The gates stage SHALL run through the gates. The command SHALL print one JSON line per executed stage and a final summary.
+`devflow run <id>` SHALL execute the next stage and continue until the task waits for a human, a stage fails, or the task is `DONE`; `--once` executes exactly one stage. The gates stage runs through the gates. The command SHALL print one JSON line per executed stage and a final summary.
 
 #### Scenario: Stops for approval
 
@@ -85,14 +112,14 @@ The system SHALL record `ok` for a model stage whose run succeeded (exit 0, outp
 
 ### Requirement: Background runs
 
-`devflow run <id> --detach` SHALL start the run loop in a separate process, print a run id and return immediately. The run's progress SHALL be written to a log that `devflow log <id> [--follow]` shows while it runs, and `devflow status` SHALL show the active run. A task MUST NOT have two active runs; starting a second one fails with `run_active`.
+`devflow run <id> --detach` SHALL reserve the task's run lock before starting a separate process, print a run id and return. The lock is released when the run ends, and is cleaned if its process is dead; a failed start releases it. `devflow log <id> [--follow]` shows the run's live log and `devflow status` the active run. A second run on a locked task fails with `run_active`.
 
 #### Scenario: Detached run
 
 - **WHEN** the user runs `devflow run t1 --detach`
 - **THEN** the command returns a run id within seconds and `devflow log t1` shows the run's output so far
 
-#### Scenario: Second run refused
+#### Scenario: Simultaneous starts
 
-- **WHEN** a run for `t1` is active and the user starts another
-- **THEN** the second command fails with `run_active`
+- **WHEN** two `devflow run t1 --detach` commands start at the same moment
+- **THEN** exactly one run starts and the other fails with `run_active`
