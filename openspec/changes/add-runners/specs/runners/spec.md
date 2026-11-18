@@ -38,7 +38,7 @@ Each run SHALL receive a write scope (zero or more path globs relative to the pr
 
 ### Requirement: Write-scope enforcement mode
 
-The result SHALL state how the scope was applied: `enforced` (devflow blocks, before execution, every write outside the scope and every shell command not allowed, regardless of the user's own CLI permission settings), `sandbox` (the CLI sandbox limits writes to its workspace and temporary locations; globs not enforced) or `advisory` (nothing enforced). A runner MUST NOT report `enforced` unless that blocking was active for the run.
+The result SHALL state how the scope was applied: `enforced` (devflow blocks, before execution, every write outside the scope and every shell command not allowed, regardless of the user's own CLI permission settings), `sandbox` (the CLI sandbox limits writes to its workspace and temporary locations; globs not enforced) or `advisory` (nothing enforced). `enforced` covers file-editing tools and the shell-command allowlist; an allowed shell command itself is not filesystem-sandboxed, which the zone gate covers after the run. A runner MUST NOT report `enforced` unless that blocking was active for the run.
 
 #### Scenario: Claude scoped writes
 
@@ -52,7 +52,7 @@ The result SHALL state how the scope was applied: `enforced` (devflow blocks, be
 
 ### Requirement: Expected outputs
 
-The system SHALL check, after the CLI exits, that every expected output is a regular, non-empty file inside the project root that was created or modified after the run started. Outputs failing any of these checks MUST be listed in the result and make the run unsuccessful even if the CLI exited with code 0.
+The system SHALL check, after the CLI exits, that every expected output is a regular, non-empty file inside the project root that was created during the run or whose content differs from a snapshot (size and SHA-256) taken before launch. Outputs failing any of these checks MUST be listed in the result and make the run unsuccessful even if the CLI exited with code 0.
 
 #### Scenario: Missing output
 
@@ -75,7 +75,7 @@ The system SHALL stop a run that exceeds its timeout (default 30 minutes, overri
 
 ### Requirement: Run result and logs
 
-Each run SHALL write the CLI's combined output to a new log file (`.devflow/runs/<task>/logs/<role>-<n>.log` when `--task` is given, otherwise `.devflow/logs/<role>-<timestamp>.log`) and print a JSON result with: runner, model, exit code, duration, `timedOut`, `missingOutputs`, write-scope mode, authentication source, log path and `ok`.
+Each run SHALL write the CLI's combined output to a new log file (`.devflow/runs/<task>/logs/<role>-<n>.log` when `--task` is given, otherwise `.devflow/logs/<role>-<timestamp>.log`) and print a JSON result with: runner, model, exit code, duration, `timedOut`, `missingOutputs`, write-scope mode, `apiKeyEnv`, log path and `ok`.
 
 #### Scenario: Successful run
 
@@ -98,7 +98,7 @@ Task ids used for log paths MUST pass the same validation as task creation. The 
 
 ### Requirement: Windows launch
 
-On Windows the system SHALL launch CLIs installed as `.cmd` or `.bat` shims through `cmd.exe` with quoting that survives `/s` quote stripping (the whole command line wrapped in an extra pair of quotes) and with delayed expansion disabled, without placing prompt text on the command line. It MUST refuse to launch when the resolved path or any argument contains characters `cmd.exe` would interpret (`&|<>^%!"` and line breaks). Paths with spaces MUST work.
+On Windows the system SHALL launch CLIs installed as `.cmd` or `.bat` shims through `cmd.exe` with every argument and the path double-quoted, the whole command line wrapped in an extra pair of quotes to survive `/s`, and delayed expansion disabled, without placing prompt text on the command line. It MUST refuse to launch when the path or any argument contains characters that stay special inside quotes (`"%!^` and line breaks) or `&|<>`. Paths with spaces or parentheses MUST work.
 
 #### Scenario: npm-installed CLI
 
@@ -121,16 +121,16 @@ The system MUST NOT read, copy, store or transmit the CLIs' credentials or sessi
 
 ### Requirement: Subscription preference
 
-By default the system SHALL remove API-key variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` for `claude`; `OPENAI_API_KEY` for `codex`) from the child environment so the CLI's subscription sign-in is used; `runners.<runner>.use_api_key: true` keeps them. The result SHALL state the source left available (`subscription` or `api_key`).
+By default the system SHALL remove API-key variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` for `claude`; `OPENAI_API_KEY` for `codex`) from the child environment so the CLI's subscription sign-in is used; `runners.<runner>.use_api_key: true` keeps them. The result SHALL state `apiKeyEnv: stripped | kept`; it MUST NOT claim which source the CLI finally used, since CLI settings (for example an API-key helper) can still select one.
 
 #### Scenario: API key present in the shell
 
 - **WHEN** `ANTHROPIC_API_KEY` is set and `runners.claude.use_api_key` is not true
-- **THEN** the `claude` child process does not receive `ANTHROPIC_API_KEY` and the result reports `subscription`
+- **THEN** the `claude` child process does not receive `ANTHROPIC_API_KEY` and the result reports `apiKeyEnv: stripped`
 
 ### Requirement: Diagnostics
 
-`devflow doctor` SHALL report, for `claude` and `codex`, whether the CLI is on PATH, its version and its login status, and which configured roles depend on a missing CLI. `devflow doctor --probe` SHALL additionally make one minimal real call for every distinct (runner, model) pair used by the configuration, and report each pair with success and duration.
+`devflow doctor` SHALL report, for `claude` and `codex`, whether the CLI is on PATH, its version and its login status, and which configured roles depend on a missing CLI. `devflow doctor --probe` SHALL additionally make one minimal read-only real call for every distinct (runner, model) pair used by the configuration, including `command` roles, and report each pair with success and duration.
 
 #### Scenario: Codex-only machine
 
