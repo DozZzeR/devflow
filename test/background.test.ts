@@ -17,9 +17,11 @@ function project() {
   const cfgPath = join(root, ".devflow", "config.json");
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   cfg.openspec = { cli: "off" };
+  cfg.runners = { env: { pass: ["FAKE_AGENT_SLEEP"] } };
   writeFileSync(cfgPath, JSON.stringify(cfg));
   const bin = fakeAgentBin(join(tempDir(), "bin"));
-  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  // The agent stays busy long enough that every concurrent start sees the lock held.
+  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_AGENT_SLEEP: "8000" };
   const devflow = (...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
     return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };

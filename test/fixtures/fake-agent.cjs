@@ -51,5 +51,6 @@ process.stdin.on("end", () => {
     write(".devflow-verdict.md", `VERDICT: ${env.FAKE_VERDICT || "PASS"}\n\ndesign-visible: ${designVisible}\nreasoning-in-prompt: ${leaked}\n`);
   }
   console.log("fake agent done");
-  process.exit(0);
+  if (env.FAKE_AGENT_SLEEP) setTimeout(() => process.exit(0), Number(env.FAKE_AGENT_SLEEP));
+  else process.exit(0);
 });
