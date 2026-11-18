@@ -2,15 +2,15 @@
 
 ## 1. Roles
 
-- [ ] 1.1 `src/roles.ts` ranking, propose (with `--probe`, `--apply`), set; CLI `devflow roles`; init preset change; verify `test/roles.test.ts`
+- [ ] 1.1 `src/roles.ts` cross-vendor ranking, propose (`--probe` through runRole, `--apply`, zero/one candidates), set (`--command`, atomic); CLI `devflow roles`; init presets without Fable; node version in doctor; verify `test/roles.test.ts`
 
 ## 2. Approval delegation
 
-- [ ] 2.1 `approval` field, `delegate-approval` command, `review` role, reviewer stage in the run loop; verify `test/review.test.ts`
+- [ ] 2.1 `approval` field (legacy default human), `delegate-approval --to model|human`, `--revision` on approve/reject with `plan_moved`, `review` role (claude/codex only), isolated plan-only review with stale check; verify `test/review.test.ts` and lifecycle tests
 
 ## 3. MCP server
 
-- [ ] 3.1 `devflow mcp` with task, run, log and role tools and error mapping; verify `test/mcp.test.ts`
+- [ ] 3.1 Generalised background jobs; `devflow mcp` with project location rules, task, job, log and role tools, error mapping and human-decision tool descriptions; verify `test/mcp.test.ts`
 
 ## 4. Plugins
 

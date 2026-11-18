@@ -1,20 +1,50 @@
+## MODIFIED Requirements
+
+### Requirement: Human-only decisions
+
+Plan approval, plan rejection, approval delegation and tier downgrade SHALL be possible only through explicit human commands (`devflow approve`, `devflow approve --reject`, `devflow delegate-approval`, `devflow tier`) or the matching MCP tools invoked on the user's instruction. Approval and rejection through MCP MUST name the plan revision they judge (shown by `status`); the CLI accepts an optional `--revision`. A named revision that is not current fails with `plan_moved`. `approve` MUST fail unless the task is awaiting approval. A task in `HUMAN` resumes only via `devflow tier` or `devflow approve --resume`.
+
+#### Scenario: Approve unlocks implement
+
+- **WHEN** a task awaits plan approval and the user runs `devflow approve feat-x`
+- **THEN** `next` reports stage `implement`
+
+#### Scenario: Approve at the wrong time
+
+- **WHEN** a task is in state `NEW` and the user runs `devflow approve feat-x`
+- **THEN** the command exits non-zero with reason `not_awaiting_approval`
+
+#### Scenario: Stale approval
+
+- **WHEN** the user approves revision 1 but the plan was rejected and redesigned as revision 2
+- **THEN** the command fails with `plan_moved`
+
 ## ADDED Requirements
 
 ### Requirement: Approval delegation
 
-Plan approval SHALL be done by a human unless the human runs `devflow delegate-approval <id> --to model` (or the matching MCP tool) for that task. A delegated task, on reaching plan approval, SHALL run the `review` role on the plan; its first line `APPROVE` approves with the plan binding, `REJECT: <reasons>` rejects with those reasons. Delegation is recorded in history and can be revoked with `--to human`.
+Without delegation a task SHALL stop for human approval after design. `devflow delegate-approval <id> --to model` SHALL make the run loop review the plan with the `review` role instead; `--to human` revokes it. Delegation and revocation are recorded in history; tasks created before this field existed default to human.
 
 #### Scenario: Default stays human
 
 - **WHEN** a task without delegation finishes design
 - **THEN** `devflow run` stops with `awaiting_plan_approval`
 
+#### Scenario: Revoked delegation
+
+- **WHEN** delegation for `t1` was granted and then revoked with `--to human`
+- **THEN** the next design result stops for human approval
+
+### Requirement: Delegated review
+
+A delegated review SHALL judge an immutable copy of the plan (taken with its digest before the review) in an isolated directory, on a `claude` or `codex` runner only. Its first line `APPROVE` approves that digest, `REJECT: <reasons>` rejects with those reasons; any other answer stops for a human with `unreadable_review`. The verdict is applied only if the task is still awaiting approval, delegation is still active and the plan digest is unchanged; otherwise it is discarded with `review_stale`.
+
 #### Scenario: Delegated approval
 
-- **WHEN** approval for `t1` is delegated to a model and the reviewer answers `APPROVE`
-- **THEN** the task is approved with a plan digest and `devflow run` continues to implement
+- **WHEN** the reviewer answers `APPROVE` and nothing changed meanwhile
+- **THEN** the task is approved with that plan digest and `devflow run` continues to implement
 
-#### Scenario: Delegated rejection
+#### Scenario: Plan edited during review
 
-- **WHEN** the reviewer answers `REJECT: missing error case`
-- **THEN** the task returns to design with that reason as feedback
+- **WHEN** the plan changes while the reviewer runs
+- **THEN** the verdict is discarded with `review_stale` and the task still awaits approval

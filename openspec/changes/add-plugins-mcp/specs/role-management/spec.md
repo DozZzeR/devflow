@@ -13,9 +13,18 @@ Defines how the role → runner/model layout of a project is shown, proposed fro
 - **WHEN** the user runs `devflow roles`
 - **THEN** each role is printed with its runner and model
 
+### Requirement: Model ranking
+
+The system SHALL keep one cross-vendor ranking of known models (strongest first: claude/fable, claude/opus, codex/gpt-6.2-sol, claude/sonnet, codex/gpt-5.6-terra, claude/haiku, codex/gpt-5.6-luna). Candidates are the ranked models whose CLI is installed and, when probing, that answer a minimal call through the project's runner settings.
+
+#### Scenario: Codex only
+
+- **WHEN** only `codex` is installed
+- **THEN** candidates are the codex models in ranking order
+
 ### Requirement: Propose a layout
 
-`devflow roles propose [--probe]` SHALL suggest a full role layout from the installed CLIs and a ranked list of known models per runner. With `--probe` it SHALL keep only models that answer a minimal call. `design_complex` and `review` SHALL get the strongest remaining model; `verify` SHALL use a different model from `implement`. The proposal is printed and not written unless `--apply` is given.
+`devflow roles propose [--probe] [--apply]` SHALL assign: `design_complex` and `review` the strongest candidate; `design` the strongest candidate that is not Fable; `implement` and `small` the third-strongest or nearest; `explore` the weakest; `verify` the strongest candidate different from `implement`, preferring the other vendor. With one candidate every role uses it and the result warns `verify_not_independent`; with none it fails with `no_models`. Without `--apply` nothing is written.
 
 #### Scenario: Fable unavailable
 
@@ -27,9 +36,18 @@ Defines how the role → runner/model layout of a project is shown, proposed fro
 - **WHEN** the user runs `devflow roles propose` without `--apply`
 - **THEN** `.devflow/config.json` is unchanged
 
+### Requirement: Unprobed defaults
+
+`devflow init` SHALL not use Fable: with Claude available, `design_complex` and `review` default to `claude/opus`; with Codex only, to `codex/gpt-6.2-sol`.
+
+#### Scenario: Fresh init
+
+- **WHEN** both CLIs are installed and the user runs `devflow init`
+- **THEN** `roles.design_complex` is `claude/opus`
+
 ### Requirement: Set a role
 
-`devflow roles set <role> <runner> <model>` SHALL change one role in `.devflow/config.json`, keeping the rest of the file and validating the result.
+`devflow roles set <role> <runner> <model> [--command "<template>"]` SHALL change one role in `.devflow/config.json` (the template is required for `command` runners), keep the rest of the file, validate the result and write atomically; an invalid result leaves the file unchanged.
 
 #### Scenario: Unknown runner
 

@@ -1,39 +1,48 @@
 ## Purpose
 
-Defines the MCP interface of devflow: which tools an MCP client (Claude Code, Claude App, Codex, OpenCode) can call, what they return, and how long-running work stays out of tool calls.
+Defines the MCP interface of devflow: which tools an MCP client (Claude Code, Claude App, Codex, OpenCode) can call, what they return, how the project is located independently of where the plugin is installed, and how long-running work stays out of tool calls.
 
 ## ADDED Requirements
 
 ### Requirement: Server and transport
 
-`devflow mcp` SHALL start an MCP server on stdio for the project found from its working directory (or `--dir`). It MUST NOT print anything but protocol messages on stdout.
+`devflow mcp` SHALL start an MCP server on stdio. It MUST NOT print anything but protocol messages on stdout.
 
 #### Scenario: Client lists tools
 
 - **WHEN** an MCP client connects and lists tools
 - **THEN** it receives the devflow tools with input schemas
 
+### Requirement: Project location
+
+Every tool SHALL accept an optional `projectDir`. The project root SHALL be resolved from `projectDir`, else the `CLAUDE_PROJECT_DIR` environment variable, else the server's working directory, by searching upwards for `.devflow/`; the plugin's own install directory MUST NOT be used as a project. A missing project is a tool error with reason `no_project`.
+
+#### Scenario: Codex plugin directory as cwd
+
+- **WHEN** the server runs with its working directory set to the plugin folder and a tool is called with `projectDir` pointing to a checkout
+- **THEN** the tool acts on that checkout
+
 ### Requirement: Task tools
 
-The server SHALL provide `devflow_status`, `devflow_start`, `devflow_next`, `devflow_gate`, `devflow_approve`, `devflow_reject` and `devflow_delegate_approval`, each mapping to the CLI behaviour of the same name and returning JSON text. Domain errors MUST be returned as tool errors carrying the devflow `reason`, not as protocol failures.
+The server SHALL provide `devflow_status`, `devflow_start`, `devflow_next`, `devflow_approve`, `devflow_reject` and `devflow_delegate_approval`, each mapping to the CLI behaviour of the same name and returning JSON text. Domain errors MUST be returned as tool errors carrying the devflow `reason`. Tools that record a human decision MUST state in their description that they may be called only on the user's explicit instruction.
 
 #### Scenario: Out-of-order approval
 
 - **WHEN** a client calls `devflow_approve` for a task that is not awaiting approval
 - **THEN** the tool result is an error whose text contains `not_awaiting_approval`
 
-### Requirement: Background runs
+### Requirement: Background jobs
 
-`devflow_run` SHALL start the run loop in the background (same lock rules as `devflow run --detach`) and return `{ runId, log }` immediately. `devflow_run_status` SHALL report whether the run is active, its last stage report and the task's next stage; `devflow_log` SHALL return the tail of the run log (default 200 lines).
+Tools whose work can take longer than a few seconds (`devflow_run`, `devflow_gate`, `devflow_roles_propose` with probing) SHALL start a background job under the task's or project's lock and return `{ jobId, log }` immediately. `devflow_job_status` SHALL report whether the job is active and its last result line; `devflow_log` SHALL return the tail of a job log (default 200 lines).
 
 #### Scenario: Run returns at once
 
 - **WHEN** a client calls `devflow_run` for a task whose stages take minutes
-- **THEN** the call returns within seconds with a run id
+- **THEN** the call returns within seconds with a job id
 
 #### Scenario: Progress
 
-- **WHEN** a client calls `devflow_log` while the run is active
+- **WHEN** a client calls `devflow_log` while the job is active
 - **THEN** it receives the latest lines written so far
 
 ### Requirement: Role tools
