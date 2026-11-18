@@ -40365,7 +40365,11 @@ ${plan}`;
     saveTask(root, t2);
     return { stage: "review", outcome: "reject", reason: check2.reason, next: nextStage(t2, config2) };
   }
-  const t = transition(current, { kind: "approve", planDigest: digest, zone: check2.zone, revision, by: "model" }, config2, io.now());
+  const latest = loadTask(root, id);
+  if (latest.updatedAt !== current.updatedAt || latest.approval !== "model" || planDigest(root, id, revision) !== digest) {
+    return { stage: "review", outcome: "stale", reason: "review_stale", next: nextStage(latest, config2) };
+  }
+  const t = transition(latest, { kind: "approve", planDigest: digest, zone: check2.zone, revision, by: "model" }, config2, io.now());
   saveTask(root, t);
   return { stage: "review", outcome: "approve", next: nextStage(t, config2) };
 }

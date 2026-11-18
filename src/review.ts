@@ -132,7 +132,16 @@ export async function runDelegatedReview(root: string, config: Config, id: strin
     saveTask(root, t);
     return { stage: "review", outcome: "reject", reason: check.reason, next: nextStage(t, config) };
   }
-  const t = transition(current, { kind: "approve", planDigest: digest, zone: check.zone!, revision, by: "model" }, config, io.now());
+  // The design checks are asynchronous: re-check that nothing moved before recording the approval.
+  const latest = loadTask(root, id);
+  if (
+    latest.updatedAt !== current.updatedAt ||
+    latest.approval !== "model" ||
+    planDigest(root, id, revision) !== digest
+  ) {
+    return { stage: "review", outcome: "stale", reason: "review_stale", next: nextStage(latest, config) };
+  }
+  const t = transition(latest, { kind: "approve", planDigest: digest, zone: check.zone!, revision, by: "model" }, config, io.now());
   saveTask(root, t);
   return { stage: "review", outcome: "approve", next: nextStage(t, config) };
 }

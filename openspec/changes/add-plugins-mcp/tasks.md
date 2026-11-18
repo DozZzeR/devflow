@@ -25,6 +25,7 @@
 - [x] 5.3 `npx openspec validate add-plugins-mcp --strict`, `npx openspec validate --specs --strict`, `npm test`
 - [x] 5.4 Independent verify by Codex (two rounds max, round 2 high-only)
   - Round 1: REWORK, 14. Fixed: review prompt had verdict-shaped lines that codex echoes into its log (a real misread risk), review now binds the digest of the copy it judged; log paths validated and kept inside .devflow; gate all takes the task lock; approve checks status and revision before design checks; MCP roles_set returns invalid_config; plugin build refuses to replace unrelated directories. Deferred items are in docs/TODO.md.
+  - Round 2 (limit, high-only): 3 open. Fixed: spec says the last verdict line decides (as the prompt asks); approval re-checks state, delegation and digest after the asynchronous design checks. Remaining (symlink-forged job/log records, locks for single gates and probes) deferred in docs/TODO.md for the human decision.
 
 ## Workflow follow-up
 
