@@ -1,15 +1,19 @@
+/** @file Create temporary Git projects with a committed baseline and a small executable test suite. */
+
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { initProject } from "../src/config.js";
 import { tempDir } from "./helpers.js";
 
+/** Run a fixture command synchronously and fail the test with stderr on a nonzero exit. */
 export function sh(cwd: string, cmd: string, args: string[]): string {
   const r = spawnSync(cmd, args, { cwd, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(" ")}: ${r.stderr}`);
   return r.stdout;
 }
 
+/** Buffer incomplete lines separately for each stream before redaction. */
 export function write(root: string, path: string, content: string): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), content);
@@ -51,4 +55,5 @@ export function gitProject(opts: { subdir?: string } = {}): { repo: string; root
 }
 
 import { createRequire } from "node:module";
+/** Load filesystem functions for the fixture's JSON configuration reader. */
 const require_ = createRequire(import.meta.url);

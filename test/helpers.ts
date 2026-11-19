@@ -1,3 +1,5 @@
+/** @file Build repeatable lifecycle inputs and register cleanup of temporary test directories. */
+
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,8 +7,10 @@ import { after } from "node:test";
 import { parseConfig, DEFAULT_CONFIG, type Config } from "../src/config.js";
 import { newTask, transition, type Event, type TaskState, type Tier } from "../src/lifecycle.js";
 
+/** Fixed ISO timestamp used to make transition assertions reproducible. */
 export const NOW = "2026-11-17T12:00:00.000Z";
 
+/** Build a validated configuration with optional attempt-limit overrides. */
 export function config(overrides: { limits?: Partial<Config["limits"]> } = {}): Config {
   return parseConfig({
     ...structuredClone(DEFAULT_CONFIG),
@@ -14,6 +18,7 @@ export function config(overrides: { limits?: Partial<Config["limits"]> } = {}): 
   });
 }
 
+/** Construct a new lifecycle task for the requested tier. */
 export function task(tier: Tier = "medium"): TaskState {
   return newTask("t1", "test task", tier, undefined, NOW);
 }
@@ -23,10 +28,13 @@ export function play(t: TaskState, cfg: Config, ...events: Event[]): TaskState {
   return events.reduce((s, e) => transition(s, e, cfg, NOW), t);
 }
 
+/** Construct a successful completion or gate event for a transition test. */
 export const ok = (stage: "explore" | "design" | "implement" | "gates"): Event =>
   stage === "gates" ? { kind: "gates", outcome: "pass" } : { kind: "complete", stage, outcome: "ok" };
+/** Construct a failed completion or test-gate event for a transition test. */
 export const fail = (stage: "explore" | "design" | "implement" | "gates"): Event =>
   stage === "gates" ? { kind: "gates", outcome: "fail", gate: "tests" } : { kind: "complete", stage, outcome: "fail" };
+/** Construct a verifier event, supplying the manual override for a synthetic PASS. */
 export const verify = (outcome: "pass" | "rework" | "human"): Event =>
   outcome === "pass" ? { kind: "complete", stage: "verify", outcome, override: "test helper" } : { kind: "complete", stage: "verify", outcome };
 

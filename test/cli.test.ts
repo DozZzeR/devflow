@@ -1,3 +1,5 @@
+/** @file Check CLI parsing, human decisions, status output and state transitions as observed by a caller. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -5,13 +7,16 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Execute the compiled CLI in the fixture and return captured output and exit status. */
 function devflow(cwd: string, ...args: string[]) {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8" });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 
+/** Decode the CLI's machine-readable output for assertions. */
 const json = (s: string) => JSON.parse(s) as Record<string, any>;
 
 test("small task end to end", () => {

@@ -1,25 +1,36 @@
+/** @file Assemble stage-specific prompts from project overrides, role inputs and verification history. */
+
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
 
+/** Prompt template key, including the small-task variant of implementation. */
 export type PromptStage = "explore" | "design" | "implement" | "small" | "verify";
 
 /** Placeholders a template may use. Unknown placeholders are an error, missing values become empty. */
 export interface PromptInputs {
+  /** Task identifier interpolated into the role instructions. */
   id: string;
+  /** User's task description supplied to the role. */
   description: string;
+  /** Optional external issue reference shown with the task. */
   tracker?: string;
+  /** Language requested for human-readable artifacts. */
   language: string;
   /** Paths the role should write, in words. */
   outputs: string;
   /** Inlined context blocks prepared by the stage. */
   context: string;
+  /** Project test command provided to the role. */
   testCommand: string;
+  /** Verification round controlling whether previous findings are in scope. */
   round?: number;
+  /** Review evidence inserted for a subsequent verification round. */
   previousVerdict?: string;
 }
 
+/** Shared role, task, language and output-scope instructions. */
 const COMMON_HEADER = `You are the {{role}} role in a devflow task. Other roles plan, implement and verify; you do only your part.
 Task id: {{id}}{{tracker}}
 Task: {{description}}
@@ -28,6 +39,7 @@ Only write the files named under "Outputs". Writes elsewhere are blocked or disc
 
 `;
 
+/** Built-in descriptions of the artifacts and decisions expected from each role. */
 export const TEMPLATES: Record<PromptStage, string> = {
   explore:
     COMMON_HEADER.replace("{{role}}", "EXPLORE") +
@@ -96,16 +108,20 @@ Outputs: {{outputs}}
 `,
 };
 
+/** Limit later verify rounds to high-severity issues and regressions of prior findings. */
 const ROUND2_RULE = `This is round {{round}}. Report ONLY high-severity findings and regressions of findings from the previous verdict below. Do not raise new medium or low findings.`;
 
+/** Placeholder names accepted by project prompt overrides. */
 const KNOWN = new Set(["role", "id", "tracker", "description", "language", "outputs", "context", "testCommand", "roundRule", "previousVerdict", "round"]);
 
+/** Load a project stage override if present, otherwise return its built-in prompt. */
 export function loadTemplate(root: string, stage: PromptStage): string {
   const override = join(root, DEVFLOW_DIR, "prompts", `${stage}.md`);
   if (existsSync(override)) return readFileSync(override, "utf8");
   return TEMPLATES[stage];
 }
 
+/** Render a template from stage inputs and reject unrecognized placeholders. */
 export function composePrompt(template: string, inputs: PromptInputs): string {
   const round = inputs.round ?? 1;
   const values: Record<string, string> = {

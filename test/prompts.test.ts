@@ -1,3 +1,5 @@
+/** @file Check stage templates, overrides and verifier-specific inputs across review rounds. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -10,6 +12,7 @@ import { DevflowError } from "../src/errors.js";
 import { gitProject, write } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
 
+/** Build the common prompt inputs used by the stage cases. */
 const base = { id: "t1", description: "Add mul", language: "ru", outputs: "x.md", context: "CTX", testCommand: "npm test" };
 
 test("templates carry task, language, outputs and context", () => {
@@ -90,6 +93,7 @@ test("snapshot digest follows content, deletion, new files and config", () => {
   assert.notEqual(snapshotDigest(root, b, other), snapshotDigest(root, b, cfg));
 });
 
+/** Write a minimal OpenSpec change used as prompt context. */
 function plan(root: string) {
   write(root, "openspec/changes/t1/proposal.md", "# P\n");
   write(root, "openspec/changes/t1/tasks.md", "- [ ] 1.1 x\n");

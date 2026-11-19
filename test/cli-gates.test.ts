@@ -1,3 +1,5 @@
+/** @file Exercise base, zone and gate commands against disposable Git projects. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -6,11 +8,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitProject, write } from "./gitrepo.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
+/** Execute the compiled CLI in the fixture and return captured output and exit status. */
 const devflow = (cwd: string, ...args: string[]) => {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8" });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 };
+/** Load the task's persisted JSON so assertions can inspect transitions and counters. */
 const state = (root: string, id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
 
 test("start records base and zone; zone --from-design and base update them", () => {

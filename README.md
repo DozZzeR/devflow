@@ -4,6 +4,8 @@ Role-separated, multi-model development workflow with deterministic gates. Plans
 
 Status: early (0.1.0). CLI, runners, gates, the `devflow run` loop, an MCP server and Claude Code / Codex plugins exist. Design: [docs/SPEC.md](docs/SPEC.md).
 
+[Руководство разработчика: роли, статусы, переходы и цикл изменения devflow](docs/DEVELOPMENT.md).
+
 ## Revising one part of an OpenSpec plan
 
 `devflow nodes <id>` (MCP: `devflow_nodes`) lists the stable checkbox IDs, text and completion state from the change's `tasks.md`. The designer decomposes work after exploration. Each node names a scenario, dependencies when relevant, and its test. The whole OpenSpec change remains the unit of approval and integration testing.

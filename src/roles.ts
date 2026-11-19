@@ -1,3 +1,5 @@
+/** @file Inspect available vendor models and propose or persist role assignments. */
+
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILE, DEVFLOW_DIR, parseConfig, type Config, type Role } from "./config.js";
@@ -6,8 +8,11 @@ import { buildChildEnv, resolveCommand } from "./proc.js";
 import { runRole } from "./runners.js";
 import { writeFileAtomic } from "./store.js";
 
+/** Vendor and model pair considered during role selection. */
 export interface Candidate {
+  /** Vendor CLI providing this candidate. */
   runner: "claude" | "codex";
+  /** Model identifier passed to the selected CLI. */
   model: string;
 }
 
@@ -22,13 +27,19 @@ export const RANKING: Candidate[] = [
   { runner: "codex", model: "gpt-5.6-luna" },
 ];
 
+/** Role keys accepted by the role management commands. */
 export const ROLE_NAMES = ["explore", "design", "design_complex", "review", "implement", "small", "verify"] as const;
 
+/** Build the vendor/model identifier used for role comparisons. */
 const key = (c: Candidate) => `${c.runner}/${c.model}`;
 
+/** Proposed role layout plus the candidates and independence warnings behind it. */
 export interface Proposal {
+  /** Role assignments suitable for merging into project configuration. */
   roles: Record<(typeof ROLE_NAMES)[number], Candidate>;
+  /** Ranked vendor/model pairs from which the layout was selected. */
   candidates: Candidate[];
+  /** Conditions such as verify having to share the implementation model. */
   warnings: string[];
 }
 
@@ -54,6 +65,7 @@ export function proposeLayout(candidates: Candidate[]): Proposal {
   };
 }
 
+/** Run a minimal read-only call to check the candidate's availability. */
 async function probe(root: string, config: Config, c: Candidate, env: NodeJS.ProcessEnv): Promise<boolean> {
   try {
     const r = await runRole({
@@ -86,6 +98,7 @@ export async function candidates(root: string, config: Config, opts: { probe?: b
   return out;
 }
 
+/** Load the existing JSON object so role updates retain other project settings. */
 function readRaw(root: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(root, DEVFLOW_DIR, CONFIG_FILE), "utf8")) as Record<string, unknown>;
 }
@@ -99,10 +112,12 @@ function writeRoles(root: string, roles: Record<string, unknown>): Config {
   return config;
 }
 
+/** Validate and atomically persist the assignments from a proposed layout. */
 export function applyProposal(root: string, p: Proposal): Config {
   return writeRoles(root, p.roles);
 }
 
+/** Validate a role key and persist a single runner/model override. */
 export function setRole(root: string, role: string, runner: string, model: string, command?: string): Config {
   if (!(ROLE_NAMES as readonly string[]).includes(role)) {
     throw new DevflowError("invalid_config", `Unknown role "${role}" (roles: ${ROLE_NAMES.join(", ")}).`);
@@ -112,6 +127,7 @@ export function setRole(root: string, role: string, runner: string, model: strin
   return writeRoles(root, { [role]: value });
 }
 
+/** Return the configured roles, omitting optional assignments that are absent. */
 export function showRoles(config: Config): Record<string, Role> {
   return Object.fromEntries(Object.entries(config.roles).filter((e): e is [string, Role] => e[1] !== undefined));
 }

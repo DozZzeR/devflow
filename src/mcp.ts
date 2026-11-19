@@ -1,3 +1,5 @@
+/** @file Expose project-scoped CLI operations and background job polling over MCP stdio. */
+
 import { dirname, relative, resolve, sep, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -10,14 +12,19 @@ import { nextStage } from "./lifecycle.js";
 import { loadConfig } from "./config.js";
 import { loadTask, validateId } from "./store.js";
 
+/** Host directory, environment, time source and CLI adapter used by the MCP server. */
 export interface McpContext {
+  /** Fallback starting directory for project discovery. */
   cwd: string;
+  /** Server environment supplied to the selected command. */
   env: NodeJS.ProcessEnv;
+  /** Clock used by in-process CLI calls to timestamp state. */
   now: () => string;
   /** The CLI entry (passed in: importing cli.js from here would deadlock on its top-level await). */
   run: CliRunner;
 }
 
+/** In-process CLI adapter returning an exit code through injected I/O. */
 export type CliRunner = (argv: string[], io: { cwd: string; env: NodeJS.ProcessEnv; out: (s: string) => void; err: (s: string) => void; now: () => string; readStdin: () => Promise<string> }) => Promise<number>;
 
 /** The plugin's own install directory (bundle: <plugin>/bin/devflow.mjs); never a project. */
@@ -26,6 +33,7 @@ function pluginRoot(): string | undefined {
   return /[\\/]bin[\\/]devflow\.mjs$/.test(script) ? resolve(dirname(script), "..") : undefined;
 }
 
+/** Test whether a resolved project path is the plugin directory or lies beneath it. */
 function inside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel) && !rel.split(sep).includes(".."));
@@ -42,9 +50,12 @@ export function resolveProject(ctx: McpContext, projectDir?: string): string {
   return root;
 }
 
+/** Wrap a string or serialized result as MCP text content. */
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }] });
+/** Return a structured MCP tool error containing a stable reason and message. */
 const fail = (reason: string, message: string) => ({ ...text({ error: { reason, message } }), isError: true });
 
+/** Translate thrown domain and unexpected errors into MCP tool results. */
 function guard<A>(fn: (a: A) => Promise<ReturnType<typeof text>> | ReturnType<typeof text>) {
   return async (a: A) => {
     try {
@@ -56,8 +67,10 @@ function guard<A>(fn: (a: A) => Promise<ReturnType<typeof text>> | ReturnType<ty
   };
 }
 
+/** Tool description requiring explicit user direction for plan decisions. */
 const HUMAN_ONLY = "Records a human decision: call it ONLY when the user has explicitly told you to, in this conversation, for this task and plan revision. Never call it on your own judgement.";
 
+/** Register project tools, delegate commands to the CLI and connect the stdio transport. */
 export async function serveMcp(ctx: McpContext): Promise<void> {
   const run = ctx.run;
   const server = new McpServer({ name: "devflow", version: "0.0.0" });

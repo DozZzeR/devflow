@@ -1,8 +1,11 @@
+/** @file Resolve executables, filter child environments and supervise subprocesses across operating systems. */
+
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { delimiter, extname, isAbsolute, join } from "node:path";
 import { DevflowError } from "./errors.js";
 
+/** Select Windows command lookup, shim invocation and process-tree cleanup. */
 const IS_WINDOWS = process.platform === "win32";
 
 /** Variables a CLI needs to start and find its own config; nothing secret. Explicit names only. */
@@ -16,11 +19,13 @@ export const ENV_ALLOWLIST = [
   "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
 ];
 
+/** Vendor API key names treated specially when assembling a role environment. */
 export const API_KEY_VARS = {
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
   codex: ["OPENAI_API_KEY"],
 } as const;
 
+/** Check an environment key against an allowlisted name or prefix pattern. */
 function matches(name: string, pattern: string): boolean {
   const n = IS_WINDOWS ? name.toUpperCase() : name;
   const p = IS_WINDOWS ? pattern.toUpperCase() : pattern;
@@ -37,6 +42,7 @@ export function buildChildEnv(parent: NodeJS.ProcessEnv, extraNames: readonly st
   return env;
 }
 
+/** Read an environment variable using the platform's lookup rules. */
 function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
   if (!IS_WINDOWS) return env[name];
   const key = Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase());
@@ -45,6 +51,7 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
 
 /** Find an executable on PATH (with PATHEXT on Windows). Returns an absolute path or undefined. */
 export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  /** Test candidate executable paths while treating a failed lookup as unavailable. */
   const isFile = (p: string) => {
     if (!existsSync(p)) return false;
     const st = statSync(p);
@@ -64,8 +71,10 @@ export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.en
   return undefined;
 }
 
+/** Characters rejected when composing arguments for a Windows command shim. */
 const CMD_UNSAFE = /["%!^&|<>\r\n]/;
 
+/** Detect a Windows batch command that requires the command interpreter. */
 export function isShim(path: string): boolean {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(path);
 }
@@ -83,21 +92,33 @@ export function cmdLine(path: string, args: readonly string[]): string {
   return `"${[path, ...args].map((t) => `"${t}"`).join(" ")}"`;
 }
 
+/** Inputs for one process with bounded runtime and streamed output. */
 export interface LaunchOptions {
+  /** Executable name or path to resolve. */
   command: string;
+  /** Argument vector passed to the resolved command. */
   args: readonly string[];
+  /** Working directory for the child process. */
   cwd: string;
+  /** Complete environment supplied to the child. */
   env: NodeJS.ProcessEnv;
+  /** Text written before closing the child's input stream. */
   stdin: string;
+  /** Time budget in milliseconds before process-tree termination begins. */
   timeoutMs: number;
+  /** Consumer of decoded output chunks and their originating stream. */
   onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
   /** How long to wait for the process to close after the tree kill before giving up (default 5 s). */
   teardownMs?: number;
 }
 
+/** Process completion evidence used by runners and gates. */
 export interface LaunchResult {
+  /** Numeric exit status, or null on timeout or signal termination. */
   exitCode: number | null;
+  /** Whether the configured execution deadline expired. */
   timedOut: boolean;
+  /** Elapsed wall-clock time including termination handling. */
   durationMs: number;
   /** Set when the tree kill could not be confirmed; descendants may still be running. */
   killFailed?: boolean;
@@ -141,6 +162,7 @@ export function launch(opts: LaunchOptions): Promise<LaunchResult> {
   return spawnAndWait(file, args, viaCmd, opts);
 }
 
+/** Launch settings for a configured shell command string. */
 export type ShellOptions = Omit<LaunchOptions, "command" | "args">;
 
 /**
@@ -159,6 +181,7 @@ export function launchShell(command: string, opts: ShellOptions): Promise<Launch
   return spawnAndWait("/bin/sh", ["-c", command], false, opts);
 }
 
+/** Stream both outputs, close stdin and settle exactly once after exit or bounded teardown. */
 function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: ShellOptions): Promise<LaunchResult> {
   const viaCmd = verbatim;
   const started = Date.now();
@@ -176,6 +199,7 @@ function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: She
     let killFailed = false;
     let settled = false;
     let teardown: NodeJS.Timeout | undefined;
+    /** Resolve the process result once, or surface an earlier output-recording error. */
     const finish = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
@@ -207,6 +231,7 @@ function spawnAndWait(file: string, args: string[], verbatim: boolean, opts: She
 
     // A failing output handler (for example a log write error) must not escape the promise.
     let outputError: Error | undefined;
+    /** Forward a decoded output chunk and remember exceptions raised by the log consumer. */
     const emit = (c: string, stream: "stdout" | "stderr") => {
       if (outputError) return;
       try {

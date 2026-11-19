@@ -1,3 +1,5 @@
+/** @file Interpret model answers and apply delegated review only to the plan snapshot actually reviewed. */
+
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,14 +13,21 @@ import { runRole } from "./runners.js";
 import { changeFiles, changeFolder, planDigest } from "./snapshot.js";
 import { loadTask, saveTask } from "./store.js";
 
+/** Delegated plan-review outcome and the next routing decision. */
 export interface ReviewReport {
+  /** Identifies delegated review separately from a numbered execution stage. */
   stage: "review";
+  /** Whether review approves, rejects, needs intervention or has become stale. */
   outcome: "approve" | "reject" | "human" | "stale";
+  /** Machine-readable explanation when the decision cannot be applied normally. */
   reason?: string;
+  /** Optional diagnostic evidence associated with the review. */
   details?: unknown;
+  /** Routing decision computed from the resulting or latest task state. */
   next: NextInfo;
 }
 
+/** Choose review, complex design or design in that order and require a supported read-only runner. */
 export function reviewRole(config: Config): Role {
   const role = config.roles.review ?? config.roles.design_complex ?? config.roles.design;
   if (role.runner !== "claude" && role.runner !== "codex") {
@@ -75,6 +84,7 @@ export function parseReview(output: string): { verdict: "approve" | "reject"; re
   return found;
 }
 
+/** Instructions for judging the feasibility, testability and scope of the submitted plan. */
 const PROMPT = `You are the REVIEW role in a devflow task. The human delegated plan approval to you. You did not write this plan.
 Judge whether the plan below is ready to implement: requirements are testable and complete for the task, the impact zone covers what must change, the test plan proves the scenarios, tasks are concrete.
 You are in a folder that contains only the plan. Do not edit anything.

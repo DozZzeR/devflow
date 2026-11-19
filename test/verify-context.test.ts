@@ -1,3 +1,5 @@
+/** @file Check verifier context selection from YAML or Markdown against the task's recorded base. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseContextKey, verificationContext } from "../src/verify-context.js";
@@ -41,6 +43,7 @@ test("parseContextKey returns empty for commented, empty or missing keys", () =>
   assert.equal(parseContextKey("  context: indented\n"), "");
 });
 
+/** Record the fixture changes in Git and return the commit used as a test base. */
 function commit(repo: string, msg: string): string {
   sh(repo, "git", ["add", "-A"]);
   sh(repo, "git", ["commit", "-q", "-m", msg]);

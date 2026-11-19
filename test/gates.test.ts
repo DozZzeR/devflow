@@ -1,3 +1,5 @@
+/** @file Check scope enforcement and the baseline, tests-only and full-change phases using Git fixtures. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -10,6 +12,7 @@ import { DevflowError } from "../src/errors.js";
 import { gitProject, sh, write } from "./gitrepo.js";
 import { NOW, tempDir } from "./helpers.js";
 
+/** Assemble gate inputs for a temporary repository and a selected base commit. */
 function ctx(root: string, base: string | undefined, opts: { zone?: string[]; tier?: Tier; config?: (c: Config) => void } = {}) {
   const task: TaskState = newTask("t1", "x", opts.tier ?? "medium", undefined, NOW);
   if (base) task.base = base;
@@ -44,6 +47,7 @@ test("generated outputs join an existing impact zone", () => {
   write(root, "src/a.ts", "export {};\n");
   write(root, "plugins/x/index.js", "generated\n");
   const zone = ["src/**"];
+  /** Configure a generated path used by the zone gate fixture. */
   const withOutput = (output: string) => (c: Config) => {
     c.build = { generate: "node gen.mjs", outputs: [output] };
   };
@@ -109,6 +113,7 @@ test("rollback regenerates only in the worktree and cleans up after failure", as
   `);
   const status = sh(root, "git", ["status", "--porcelain"]);
   const worktrees = sh(root, "git", ["worktree", "list", "--porcelain"]);
+  /** Build a gate context whose generation command can be changed between runs. */
   const withGenerate = (generate: string) => ctx(root, base, { config: (c) => { c.build = { generate, outputs: ["out/**"] }; } });
 
   const generated = await rollbackGate(withGenerate("node gen.mjs"));

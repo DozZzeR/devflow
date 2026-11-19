@@ -1,3 +1,5 @@
+/** @file Parse design impact zones and compare project-relative Git changes against approved patterns. */
+
 import { readFileSync } from "node:fs";
 import { DevflowError } from "./errors.js";
 import { matchesAny } from "./glob.js";
@@ -27,6 +29,7 @@ export function parseImpactZone(markdown: string): string[] {
   return globs;
 }
 
+/** Read the design artifact and parse its Impact zone section. */
 export function zoneFromDesign(file: string): string[] {
   let text: string;
   try {
@@ -37,6 +40,7 @@ export function zoneFromDesign(file: string): string[] {
   return parseImpactZone(text);
 }
 
+/** Return changed paths that match none of the permitted write patterns. */
 export function outsideZone(changeSet: string[], zone: string[]): string[] {
   return changeSet.filter((p) => !matchesAny(p, zone));
 }

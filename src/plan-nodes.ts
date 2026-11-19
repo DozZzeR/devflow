@@ -1,9 +1,13 @@
+/** @file Address OpenSpec checkbox tasks and associate verify findings with approved revision decisions. */
+
 import { DevflowError } from "./errors.js";
 
+/** Recognize a numbered task and capture its checkbox state and stable dotted ID. */
 const checkbox = /^([ \t]*[-*+] \[([ xX])\] (\d+(?:\.\d+)+)\s+\S.*)$/;
+/** Construct the domain error reported for malformed plan nodes or review decisions. */
 const invalid = (message: string) => new DevflowError("invalid_plan_nodes", message);
 
-/* Mask fenced examples without shifting Markdown offsets. */
+/** Mask fenced examples without shifting Markdown offsets. */
 function prose(markdown: string): string {
   let fence = "";
   return markdown.replace(/^[^\r\n]+/gm, line => {
@@ -36,6 +40,11 @@ export function planNodes(markdown: string) {
   return nodes;
 }
 
+/**
+ * Splice a single unchecked node into the original tasks.md, preserving sibling bytes and newline style.
+ * @param replacement - One unchecked task with the same ID and optional indented details.
+ * @throws DevflowError for ambiguous IDs or a malformed replacement.
+ */
 export function replaceNode(markdown: string, id: string, replacement: string): string {
   const target = planNodes(markdown).get(id);
   const candidate = replacement.trimEnd().replace(/\r\n/g, "\n");
@@ -49,10 +58,15 @@ export function replaceNode(markdown: string, id: string, replacement: string): 
   return markdown.slice(0, target.start) + text + markdown.slice(target.end);
 }
 
+/** Disposition of one numbered finding in a particular verify round. */
 export interface ReviewDecision {
+  /** Round-local finding identifier such as F2. */
   finding: string;
+  /** Whether this finding requires implementation, is deferred or is dismissed. */
   action: "fix" | "defer" | "dismiss";
+  /** Existing checkbox ID for a fix, or a dash for other decisions. */
   node: string;
+  /** Concrete fix instruction or rationale for accepting the finding without a change. */
   reason: string;
 }
 

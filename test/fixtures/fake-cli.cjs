@@ -1,3 +1,5 @@
+/** @file Simulate vendor arguments, standard streams and exit behavior for subprocess tests. */
+
 // Fake `claude` / `codex` for tests. Behaviour is driven by FAKE_* environment variables.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -13,6 +15,7 @@ if ((args[0] === "login" || args[0] === "auth") && args[1] === "status") {
   process.exit(0);
 }
 
+/** Accumulate standard input so the fixture can report what the parent sent. */
 let stdin = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => (stdin += c));
@@ -33,6 +36,7 @@ process.stdin.on("end", () => {
     const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore" });
     fs.writeFileSync(env.FAKE_GRANDCHILD, String(g.pid));
   }
+  /** Complete the simulated process with the exit status selected by the fixture. */
   const exit = () => process.exit(Number(env.FAKE_EXIT || 0));
   if (env.FAKE_SLEEP) setTimeout(exit, Number(env.FAKE_SLEEP));
   else exit();

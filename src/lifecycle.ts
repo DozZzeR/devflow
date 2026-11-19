@@ -1,10 +1,15 @@
+/** @file Define task states and compute valid transitions from recorded events without filesystem I/O. */
+
 import { z } from "zod";
 import type { Config, Role } from "./config.js";
 import { DevflowError } from "./errors.js";
 
+/** Supported task complexities in increasing order. */
 export const TIERS = ["small", "medium", "complex"] as const;
+/** Complexity used to select stage routing and role variants. */
 export type Tier = (typeof TIERS)[number];
 
+/** Values accepted for the persisted workflow status. */
 export const STATES = [
   "NEW",
   "EXPLORED",
@@ -15,11 +20,15 @@ export const STATES = [
   "DONE",
   "HUMAN",
 ] as const;
+/** Last committed position in the task lifecycle. */
 export type TaskStatus = (typeof STATES)[number];
 
+/** Stages with attempt counters or gate outcomes. */
 export const STAGES = ["explore", "design", "implement", "gates", "verify"] as const;
+/** Stage accepted by manual completion and stage selection. */
 export type Stage = (typeof STAGES)[number];
 
+/** Allowed manual completion outcomes, indexed by stage. */
 export const OUTCOMES: Record<Stage, readonly string[]> = {
   explore: ["ok", "fail"],
   design: ["ok", "fail"],
@@ -28,59 +37,95 @@ export const OUTCOMES: Record<Stage, readonly string[]> = {
   verify: ["pass", "rework", "human"],
 };
 
+/** Validate one history record while allowing stage-specific optional evidence. */
 const HistoryEntrySchema = z.object({
+  /** Timestamp of the recorded decision. */
   at: z.string(),
+  /** Event category used to interpret the optional history fields. */
   kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
+  /** Stage associated with the recorded event, when applicable. */
   stage: z.enum(STAGES).optional(),
+  /** First gate that stopped a gate run. */
   gate: z.string().optional(),
+  /** Serialized gate evidence or attribution of a model or implementer decision. */
   results: z.string().optional(),
+  /** Reported completion or gate outcome. */
   outcome: z.string().optional(),
+  /** Prior tier or value for a recorded change. */
   from: z.string().optional(),
+  /** Target tier, revision or routing destination. */
   to: z.string().optional(),
+  /** Operator feedback or machine-readable explanation. */
   reason: z.string().optional(),
+  /** Stable OpenSpec task ID for a scoped plan revision. */
   node: z.string().optional(),
 });
+/** Audit record of a transition, decision or change of task metadata. */
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-/** Implement may send a plan back to design this many times before a human decides. */
+/** The conflict with the same issue key at this count sends the decision to a human. */
 export const PLAN_CONFLICT_LIMIT = 2;
 
+/** Initial counts for consecutive gate failures, reworks and stale evidence. */
 export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
 
+/** Validate the schema-2 record read from state.json before routing a task. */
 export const TaskStateSchema = z.strictObject({
+  /** Persistent format version accepted by this reader. */
   schema: z.literal(2),
+  /** Task ID shared by the run directory and OpenSpec change. */
   id: z.string(),
+  /** Original task statement supplied to the roles. */
   description: z.string(),
+  /** Complexity selecting the small or planned workflow. */
   tier: z.enum(TIERS),
+  /** Optional external issue reference. */
   tracker: z.string().optional(),
+  /** Last committed checkpoint used to select the next stage. */
   status: z.enum(STATES),
+  /** Reason to inspect before resuming a task in HUMAN. */
   humanReason: z.string().optional(),
+  /** Recorded attempts per model-driven stage, reset by specific transitions. */
   attempts: z.strictObject({
     explore: z.number().int().nonnegative(),
     design: z.number().int().nonnegative(),
     implement: z.number().int().nonnegative(),
     verify: z.number().int().nonnegative(),
   }),
+  /** Most recent verification outcome and the snapshot it accepted, when available. */
   lastVerdict: z.strictObject({ outcome: z.string(), at: z.string(), snapshot: z.string().optional() }).optional(),
+  /** Hash binding plan approval to the reviewed revision and artifacts. */
   planDigest: z.string().optional(),
+  /** Revision used to reject stale approval and scope plan feedback. */
   planRevision: z.number().int().positive().optional(),
+  /** Owner of plan approval, defaulting to the human when absent. */
   approval: z.enum(["human", "model"]).optional(),
+  /** Content digest accepted by the last successful full gate run. */
   gatesSnapshot: z.string().optional(),
+  /** Git commit used for change detection and rollback verification. */
   base: z.string().optional(),
+  /** Approved project-relative write globs. */
   zone: z.array(z.string()).optional(),
+  /** Escalation and invalidation counts tracked separately from role attempts. */
   counters: z.strictObject({
     gatesFailedInARow: z.number().int().nonnegative(),
     reworks: z.number().int().nonnegative(),
     staleEvidence: z.number().int().nonnegative().default(0),
   }),
+  /** Timestamp recorded when the task was started. */
   createdAt: z.string(),
+  /** Timestamp checked before recording a long-running stage result. */
   updatedAt: z.string(),
+  /** Ordered events used to explain routing, reviews and retries. */
   history: z.array(HistoryEntrySchema),
 });
+/** Persistent lifecycle data used to choose and validate the next transition. */
 export type TaskState = z.infer<typeof TaskStateSchema>;
 
+/** Distinguish a correct change, a failed check and unavailable evidence. */
 export type GateOutcome = "pass" | "fail" | "blocked";
 
+/** Discriminated input to the reducer, including human decisions and recorded execution results. */
 export type Event =
   | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string; byRun?: boolean }
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
@@ -94,18 +139,28 @@ export type Event =
   | { kind: "tier"; tier: Tier }
   | { kind: "escalate"; reason: string };
 
+/** Public routing decision returned by next and embedded in stage reports. */
 export interface NextInfo {
+  /** Identifier of the task being routed. */
   id: string;
+  /** Persisted state from which this decision was derived. */
   status: TaskStatus;
+  /** Complexity selecting the applicable route. */
   tier: Tier;
+  /** Next runnable stage, or null at a stop or invalid state. */
   stage: Stage | null;
+  /** Machine-readable explanation when routing stops or requires approval. */
   reason?: string;
+  /** Configured model assignment for a model-driven stage. */
   role?: Role;
+  /** One-based number the next role invocation would consume on completion. */
   attempt?: number;
 }
 
+/** Fresh attempt counts used at task creation and on qualifying resets. */
 const ZERO_ATTEMPTS = { explore: 0, design: 0, implement: 0, verify: 0 };
 
+/** Create an in-memory NEW task with empty counters and a start history entry. */
 export function newTask(id: string, description: string, tier: Tier, tracker: string | undefined, now: string): TaskState {
   const task: TaskState = {
     schema: 2,
@@ -128,6 +183,7 @@ function readyToImplement(tier: Tier): TaskStatus {
   return tier === "small" ? "NEW" : "PLAN_APPROVED";
 }
 
+/** Map status and tier to a runnable stage or an explicit stop reason. */
 function stageFor(task: TaskState): { stage: Stage | null; reason?: string } {
   if (task.status === "DONE") return { stage: null, reason: "done" };
   if (task.status === "HUMAN") return { stage: null, reason: task.humanReason ?? "human" };
@@ -157,6 +213,7 @@ function stageFor(task: TaskState): { stage: Stage | null; reason?: string } {
   }
 }
 
+/** Select a role for a stage, including small implementation and complex design overrides. */
 export function roleFor(stage: Stage, tier: Tier, config: Config): Role | undefined {
   switch (stage) {
     case "explore":
@@ -172,6 +229,10 @@ export function roleFor(stage: Stage, tier: Tier, config: Config): Role | undefi
   }
 }
 
+/**
+ * Combine the routing decision with role and attempt information for CLI and orchestration.
+ * @returns The next stage and role, or a stop reason when no stage is runnable.
+ */
 export function nextStage(task: TaskState, config: Config): NextInfo {
   const { stage, reason } = stageFor(task);
   const info: NextInfo = { id: task.id, status: task.status, tier: task.tier, stage };
@@ -184,13 +245,20 @@ export function nextStage(task: TaskState, config: Config): NextInfo {
   return info;
 }
 
+/** Compare planning depth when switching between medium and complex. */
 const TIER_ORDER: Record<Tier, number> = { small: 0, medium: 1, complex: 2 };
 
-/** Pure transition. Returns a new state or throws DevflowError; never mutates `task`. */
+/** Pure transition. Returns a new state or throws DevflowError; never mutates `task`.
+ * @param task - Previously persisted state.
+ * @param now - Timestamp shared by the new state and its history entry.
+ * @returns A fresh task state suitable for persistence.
+ * @throws DevflowError if the event is invalid for this task.
+ */
 export function transition(task: TaskState, event: Event, config: Config, now: string): TaskState {
   const t: TaskState = structuredClone(task);
   t.updatedAt = now;
 
+  /** Stop routing and record the reason exposed to the operator. */
   const toHuman = (reason: string) => {
     t.status = "HUMAN";
     t.humanReason = reason;
@@ -229,6 +297,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       else backToImplement();
     }
   };
+  /** Reject an outcome for a stage other than the one currently allowed. */
   const checkNext = (stage: Stage) => {
     const expected = stageFor(task).stage;
     if (stage !== expected) {
@@ -379,6 +448,7 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       if (task.status !== "PLAN_APPROVED" || task.tier === "small") {
         throw new DevflowError("no_approved_plan", `Task ${task.id} has no approved plan to send back (status: ${task.status}).`);
       }
+      /** Extract a stable bracketed conflict key or normalize a legacy free-text reason. */
       const key = (reason: string) => {
         const text = reason.replace(/^implementer:\s*/i, "").trim().toLowerCase();
         return /^\[([\w./-]+)\]/.exec(text)?.[1] ?? text.replace(/\s+/g, " ");

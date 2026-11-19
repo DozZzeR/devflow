@@ -1,8 +1,12 @@
+/** @file Install local vendor stand-ins for process-level runner and workflow tests. */
+
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Path to the controllable fake vendor CLI script. */
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "test", "fixtures", "fake-cli.cjs");
+/** Path to the stand-in that writes stage artifacts for end-to-end tests. */
 const AGENT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "test", "fixtures", "fake-agent.cjs");
 
 /** Fake `codex`/`claude` that act out devflow stages (see fixtures/fake-agent.cjs). */

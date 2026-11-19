@@ -1,3 +1,5 @@
+/** @file Authorize individual Claude tool requests against the scope supplied for one role. */
+
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
@@ -9,10 +11,12 @@ export const ScopeSchema = z.strictObject({
   write: z.array(z.string()),
   bash: z.array(z.string()),
 });
+/** Filesystem root, write globs and shell commands approved for one invocation. */
 export type Scope = z.infer<typeof ScopeSchema>;
 
 /** Tools that cannot change the filesystem or run commands. Anything not listed here or below is denied. */
 const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite", "WebFetch", "WebSearch"]);
+/** Tool-specific input fields that identify the target of a write. */
 const PATH_KEYS: Record<string, string> = {
   Edit: "file_path",
   Write: "file_path",
@@ -20,6 +24,7 @@ const PATH_KEYS: Record<string, string> = {
   NotebookEdit: "notebook_path",
 };
 
+/** Allow a tool invocation or deny it with a reason shown to the caller. */
 export type Decision = { allow: true } | { allow: false; reason: string };
 
 /** Resolve links in the nearest existing ancestor, so a linked directory cannot redirect a write. */
@@ -35,11 +40,13 @@ function effectivePath(abs: string): string {
   return join(realpathSync.native(existing), ...rest);
 }
 
+/** Return the relative path of a strict descendant; undefined rejects the root itself or an escape. */
 function outside(root: string, target: string): string | undefined {
   const rel = relative(root, target);
   return !rel || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..") ? undefined : rel;
 }
 
+/** Check a tool request against read access, permitted paths and exact shell commands. */
 export function decide(scope: Scope, toolName: string, toolInput: Record<string, unknown>): Decision {
   if (READ_ONLY_TOOLS.has(toolName)) return { allow: true };
 
@@ -88,6 +95,7 @@ export function runHook(scopeFile: string, stdinText: string): string {
     : deny(d.reason);
 }
 
+/** Encode a denial in the JSON format consumed by Claude's PreToolUse hook. */
 function deny(reason: string): string {
   return JSON.stringify({
     hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },

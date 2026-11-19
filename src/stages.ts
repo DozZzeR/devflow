@@ -1,3 +1,5 @@
+/** @file Execute one stage or a run loop and bind artifacts, gate evidence and model outcomes to task state. */
+
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,23 +18,39 @@ import { loadTask, saveTask, writeFileAtomic } from "./store.js";
 import { parseBlocked, parsePlanConflict, runDelegatedReview } from "./review.js";
 import { verificationContext } from "./verify-context.js";
 
+/** Host clock, process environment and optional time budget for stage execution. */
 export interface StageIo {
+  /** Clock supplying timestamps to persisted transitions. */
   now: () => string;
+  /** Environment passed to role and deterministic subprocess adapters. */
   env: NodeJS.ProcessEnv;
+  /** Optional per-role timeout override in milliseconds. */
   timeoutMs?: number;
 }
 
+/** One emitted stage result with its evidence and successor decision. */
 export interface StageReport {
+  /** Executed stage or orchestration action such as invalidation or delegated review. */
   stage: Stage | "invalidate" | "review";
+  /** Result label consumed by the loop when deciding whether to continue. */
   outcome: string;
+  /** Machine-readable cause when the stage stopped or rerouted. */
   reason?: string;
+  /** Optional runner output, gate evidence or artifact references. */
   details?: unknown;
+  /** Next-stage decision derived from the recorded state. */
   next: NextInfo;
 }
 
+/** Resolve the run directory for this task's role artifacts. */
 const runsDir = (root: string, id: string) => join(root, DEVFLOW_DIR, "runs", id);
+/** Read an optional Markdown artifact, using empty text when absent. */
 const read = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
+/**
+ * Re-read the task, reject a changed timestamp and persist a validated lifecycle transition.
+ * @throws DevflowError when another update changed the task timestamp before this result was recorded.
+ */
 function record(root: string, task: TaskState, event: Event, config: Config, io: StageIo): TaskState {
   const current = loadTask(root, task.id);
   if (current.updatedAt !== task.updatedAt) {
@@ -43,6 +61,7 @@ function record(root: string, task: TaskState, event: Event, config: Config, io:
   return next;
 }
 
+/** Record the design's implementation globs and append a zone history entry. */
 function setZone(root: string, task: TaskState, zone: string[], io: StageIo): TaskState {
   const t = loadTask(root, task.id);
   t.zone = zone;
@@ -60,6 +79,7 @@ function livingSpecs(root: string): string {
   return files.join("\n");
 }
 
+/** Inline selected OpenSpec artifacts as named sections for a role. */
 function changeContext(root: string, id: string, include: (f: string) => boolean): string {
   const dir = changeFolder(root, id);
   return changeFiles(root, id)
@@ -68,6 +88,7 @@ function changeContext(root: string, id: string, include: (f: string) => boolean
     .join("");
 }
 
+/** Recognize PASS, REWORK or HUMAN on the first nonblank verdict line. */
 function verdictOf(text: string): "pass" | "rework" | "human" | undefined {
   const first = text.replace(/^﻿/, "").split(/\r?\n/).find((l) => l.trim())?.trim().toUpperCase() ?? "";
   return first === "VERDICT: PASS" ? "pass" : first === "VERDICT: REWORK" ? "rework" : first === "VERDICT: HUMAN" ? "human" : undefined;
@@ -103,6 +124,7 @@ function lastSavedVerdict(dir: string, upTo: number): { round: number; text: str
   return undefined;
 }
 
+/** Retrieve the recorded gate results for the verification prompt. */
 function gatesSummary(task: TaskState): string {
   const last = [...task.history].reverse().find((h) => h.kind === "gates");
   return last ? `${last.outcome}${last.results ? `: ${last.results}` : ""}` : "";
@@ -131,10 +153,14 @@ export async function runGatesStage(root: string, task: TaskState, workingConfig
   return { task: recorded, results, skipped, configSource: source };
 }
 
+/** Task-local feedback artifact for the last failed or blocked gate run. */
 const GATES_FAILURE = "gates-failure.md";
+/** Task-local feedback artifact for a failed implementation generation command. */
 const GENERATE_FAILURE = "generate-failure.md";
+/** Maximum recent command output lines included in rework feedback. */
 const LOG_TAIL_LINES = 80;
 
+/** Extract a bounded tail of command output for the next implementation attempt. */
 function tail(text: string, lines: number): string {
   const all = text.split(/\r?\n/);
   return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
@@ -159,6 +185,7 @@ function saveGatesFailure(root: string, id: string, results: GateResult[] | unde
   writeFileSync(path, parts.join("\n\n") + "\n");
 }
 
+/** Save generation failure details and a bounded log tail for the next implementer. */
 function saveGenerateFailure(
   root: string, id: string, command: string, exitCode: number | null, timedOut: boolean, log: string,
 ): void {
@@ -201,12 +228,14 @@ function reworkFeedback(root: string, task: TaskState, designing = false): strin
   );
 }
 
+/** Resolve the configured role for a stage or raise a domain error if it is unavailable. */
 function role(stage: Stage, task: TaskState, config: Config) {
   const r = roleFor(stage, task.tier, config);
   if (!r) throw new DevflowError("unknown_role", `No role configured for ${stage}.`);
   return r;
 }
 
+/** Convert role-launch failures into a failed RunResult for normal stage reporting. */
 async function runModel(...a: Parameters<typeof runModelRaw>): Promise<RunResult> {
   try {
     return await runModelRaw(...a);
@@ -230,6 +259,7 @@ async function runModel(...a: Parameters<typeof runModelRaw>): Promise<RunResult
   }
 }
 
+/** Compose the stage prompt and invoke the selected runner with explicit writes and expected outputs. */
 async function runModelRaw(
   root: string,
   task: TaskState,
@@ -305,7 +335,10 @@ async function reviseNode(root: string, task: TaskState, config: Config, io: Sta
   }
 }
 
-/** Run the task's next stage once and record its outcome. Returns undefined when nothing is runnable. */
+/** Run the task's next stage once and record its outcome. Returns undefined when nothing is runnable.
+ * @param workingConfig - Project configuration before any base-pinned gate policy is applied.
+ * @returns A report with the new routing decision, or undefined at a stop.
+ */
 export async function runNextStage(root: string, workingConfig: Config, id: string, io: StageIo): Promise<StageReport | undefined> {
   let task = loadTask(root, id);
   const config = workingConfig;
@@ -317,6 +350,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
     return undefined;
   }
   const stage = next.stage;
+  /** Pair an outcome and its optional diagnostics with the next routing decision. */
   const report = (outcome: string, t: TaskState, reason?: string, details?: unknown): StageReport => ({
     stage,
     outcome,
@@ -440,6 +474,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
   }
 }
 
+/** Build a disposable snapshot, collect an independent verdict and recheck evidence before accepting PASS. */
 async function runVerify(
   root: string,
   task: TaskState,
@@ -553,7 +588,10 @@ async function runVerify(
   return report(verdict, t, undefined, { verdict: verdictPath, round });
 }
 
-/** Run stages until a human is needed, a stage fails, or the task is done. */
+/** Run stages until a human is needed, a stage fails, or the task is done.
+ * @param opts - Stop after one report or notify the caller after each report.
+ * @returns The ordered reports from this invocation.
+ */
 export async function runLoop(root: string, config: Config, id: string, io: StageIo, opts: { once?: boolean; onStage?: (r: StageReport) => void } = {}): Promise<StageReport[]> {
   const reports: StageReport[] = [];
   for (;;) {

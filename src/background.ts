@@ -1,3 +1,5 @@
+/** @file Reserve a task for one run and hand its log and ownership to a detached child. */
+
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,19 +11,29 @@ import { openLog } from "./logs.js";
 import { taskDir } from "./store.js";
 import { selfScript } from "./jobs.js";
 
+/** On-disk ownership record shared by foreground and detached task runs. */
 export interface RunLock {
+  /** Token checked before adopting or releasing this reservation. */
   runId: string;
+  /** Starting reservations expire by age; running reservations are checked against the PID. */
   status: "starting" | "running";
+  /** ISO timestamp used to age a starting reservation. */
   startedAt: string;
+  /** Process to probe after the run has adopted the reservation. */
   pid?: number;
+  /** Optional log path returned to clients following a detached run. */
   log?: string;
 }
 
+/** Filename of the reservation inside one task's run directory. */
 const LOCK = "run.json";
+/** Grace period for a detached child to publish its PID, in milliseconds. */
 const STARTING_TIMEOUT_MS = 60_000;
 
+/** Locate the reservation under a validated task ID. */
 const lockPath = (root: string, id: string) => join(taskDir(root, id), LOCK);
 
+/** Read reservation metadata; missing or unreadable JSON yields undefined. */
 export function readLock(root: string, id: string): RunLock | undefined {
   const p = lockPath(root, id);
   if (!existsSync(p)) return undefined;
@@ -32,6 +44,7 @@ export function readLock(root: string, id: string): RunLock | undefined {
   }
 }
 
+/** Check whether the recorded child process still exists. */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -73,11 +86,13 @@ export function adoptLock(root: string, id: string, runId: string): void {
   writeFileSync(lockPath(root, id), JSON.stringify({ ...lock, status: "running", pid: process.pid }));
 }
 
+/** Remove the reservation only if the observed owner matches the caller's run ID. */
 export function releaseLock(root: string, id: string, runId: string): void {
   const lock = readLock(root, id);
   if (lock?.runId === runId) rmSync(lockPath(root, id), { force: true });
 }
 
+/** Combine a UTC timestamp with random bytes for detached run and job identifiers. */
 export const newRunId = () => `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomBytes(3).toString("hex")}`;
 
 /** Reserve the lock, then start `devflow run <id> --run-id <runId>` detached with output to a run log. */

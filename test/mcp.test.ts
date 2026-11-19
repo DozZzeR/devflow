@@ -1,3 +1,5 @@
+/** @file Exercise MCP tools through a real stdio client against isolated project directories. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -9,8 +11,10 @@ import { fakeAgentBin } from "./fake.js";
 import { gitProject, sh } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Start a stdio MCP server and connect a test client in the supplied directory. */
 async function connect(cwd: string, env: Record<string, string>) {
   const client = new Client({ name: "devflow-test", version: "1.0.0" });
   const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp"], cwd, env });
@@ -18,7 +22,9 @@ async function connect(cwd: string, env: Record<string, string>) {
   return client;
 }
 
+/** Parsed and raw parts of an MCP tool response used by assertions. */
 type ToolResult = { content: { type: string; text: string }[]; isError?: boolean };
+/** Invoke one MCP tool and expose both its error flag and decoded response. */
 const call = async (c: Client, name: string, args: Record<string, unknown>) => {
   const r = (await c.callTool({ name, arguments: args })) as ToolResult;
   const raw = r.content[0]!.text;
@@ -31,6 +37,7 @@ const call = async (c: Client, name: string, args: Record<string, unknown>) => {
   return { error: r.isError === true, json };
 };
 
+/** Prepare an isolated project for this suite's command executions. */
 function project() {
   const { root } = gitProject();
   const cfgPath = join(root, ".devflow", "config.json");

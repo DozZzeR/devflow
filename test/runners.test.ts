@@ -1,3 +1,5 @@
+/** @file Verify invocation arguments, environment policy, output freshness and role execution results. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7,6 +9,7 @@ import { checkOutputs, claudeInvocation, claudeSettings, codexInvocation, comman
 import { DevflowError } from "../src/errors.js";
 import { tempDir } from "./helpers.js";
 
+/** Match a thrown domain error by its machine-readable reason. */
 const reason = (r: string) => (e: unknown) => e instanceof DevflowError && e.reason === r;
 
 test("claude invocation: dontAsk, hook settings, scoped tools, bash denied when not allowed", () => {
@@ -59,6 +62,7 @@ test("outputs: missing, empty, stale, outside project; new and changed files pas
   mkdirSync(join(root, "o"));
   writeFileSync(join(root, "o", "stale.json"), "old");
   writeFileSync(join(root, "o", "changed.json"), "old");
+  /** Compute a SHA-256 digest for expected-output freshness assertions. */
   const h = (v: string) => createHash("sha256").update(v).digest("hex");
   const before = new Map([
     ["o/stale.json", { exists: true, size: 3, hash: h("old") }],

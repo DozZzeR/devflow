@@ -1,11 +1,15 @@
+/** @file Exercise routing and transition invariants from domain events without launching role processes. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nextStage, transition } from "../src/lifecycle.js";
 import { DevflowError } from "../src/errors.js";
 import { NOW, config, fail, ok, play, task, verify } from "./helpers.js";
 
+/** Shared validated configuration for lifecycle transition cases. */
 const cfg = config();
 
+/** Assert that an invalid transition raises the expected domain reason. */
 function rejects(fn: () => unknown, reason: string) {
   assert.throws(fn, (e: unknown) => e instanceof DevflowError && e.reason === reason);
 }

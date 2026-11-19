@@ -1,3 +1,5 @@
+/** @file Verify exclusive log creation, path handling and redaction across streamed chunks. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
@@ -6,6 +8,7 @@ import { openLog, redact } from "../src/logs.js";
 import { DevflowError } from "../src/errors.js";
 import { tempDir } from "./helpers.js";
 
+/** Match a thrown domain error by its machine-readable reason. */
 const reason = (r: string) => (e: unknown) => e instanceof DevflowError && e.reason === r;
 
 test("redaction masks keys and tokens", () => {

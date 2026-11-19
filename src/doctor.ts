@@ -1,22 +1,35 @@
+/** @file Report CLI availability, authentication summaries and optional live role probes. */
+
 import { readFileSync } from "node:fs";
 import type { Config, Role } from "./config.js";
 import { buildChildEnv, launch, resolveCommand } from "./proc.js";
 import { runRole, type RunResult } from "./runners.js";
 
+/** Result of inspecting one vendor executable and its account status. */
 export interface CliStatus {
+  /** Vendor command inspected on PATH. */
   name: "claude" | "codex";
+  /** Resolved executable, or null if unavailable. */
   path: string | null;
+  /** First reported version line, or null when the command fails. */
   version: string | null;
+  /** Short account status suitable for display in the diagnostic report. */
   login: string;
 }
 
+/** Environment diagnostics for all configured vendor roles. */
 export interface DoctorReport {
+  /** Status of each known vendor CLI. */
   clis: CliStatus[];
+  /** Configured roles whose vendor executable could not be found. */
   missing: { role: string; runner: string }[];
+  /** Node version of the running process. */
   node: string;
+  /** Optional results of live calls, deduplicated by vendor and model. */
   probes?: { runner: string; model: string; ok: boolean; durationMs: number; log: string; detail?: string }[];
 }
 
+/** Run a bounded diagnostic command and collapse output and launch errors into one record. */
 async function capture(command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<{ code: number | null; out: string }> {
   let out = "";
   try {
@@ -27,6 +40,7 @@ async function capture(command: string, args: string[], env: NodeJS.ProcessEnv, 
   }
 }
 
+/** Pick the first nonblank line for compact diagnostic output. */
 function firstLine(s: string): string {
   return s.split(/\r?\n/).find((l) => l.trim())?.trim() ?? "";
 }
@@ -44,6 +58,7 @@ export function loginSummary(out: string): string {
   return firstLine(out) || "ok";
 }
 
+/** Read a bounded suffix of the last nonblank log line for a probe diagnostic. */
 function lastLogLine(path: string): string | undefined {
   try {
     const lines = readFileSync(path, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -53,6 +68,7 @@ function lastLogLine(path: string): string | undefined {
   }
 }
 
+/** Resolve the vendor CLI and collect version and login information with a filtered environment. */
 export async function cliStatus(name: "claude" | "codex", cwd: string, parentEnv: NodeJS.ProcessEnv = process.env): Promise<CliStatus> {
   const env = buildChildEnv(parentEnv);
   const path = resolveCommand(name, env) ?? null;
@@ -67,6 +83,7 @@ export async function cliStatus(name: "claude" | "codex", cwd: string, parentEnv
   };
 }
 
+/** Inspect installed CLIs; when probe is enabled, make a read-only call for each distinct vendor/model pair. */
 export async function doctor(root: string, config: Config, probe: boolean, parentEnv: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {
   const clis = [await cliStatus("claude", root, parentEnv), await cliStatus("codex", root, parentEnv)];
   const installed = new Set(clis.filter((c) => c.path).map((c) => c.name as string));

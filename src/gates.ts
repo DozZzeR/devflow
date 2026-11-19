@@ -1,3 +1,5 @@
+/** @file Evaluate scope, test and rollback evidence and classify operational failures for the lifecycle. */
+
 import { copyFileSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseConfig, type Config } from "./config.js";
@@ -9,25 +11,40 @@ import { openLog } from "./logs.js";
 import { launchShell } from "./proc.js";
 import { outsideZone } from "./zone.js";
 
+/** Execution order for checking scope, the working tree and regression sensitivity. */
 export const GATE_NAMES = ["zone", "tests", "rollback"] as const;
+/** Name accepted by the standalone gate command. */
 export type GateName = (typeof GATE_NAMES)[number];
 
+/** Evidence and diagnostics returned by one deterministic gate. */
 export interface GateResult {
+  /** Gate that produced this result. */
   name: GateName;
+  /** Pass advances, fail requests correction, and blocked requires intervention when recorded. */
   outcome: GateOutcome;
+  /** Machine-readable explanation for a failed or blocked check. */
   reason?: string;
+  /** Gate-specific evidence such as changed paths, exit codes or log locations. */
   details?: unknown;
+  /** Wall-clock duration of this gate in milliseconds. */
   durationMs: number;
+  /** Non-fatal conditions retained even when the check passes. */
   warnings?: string[];
 }
 
+/** Project, task and trusted configuration against which a gate runs. */
 export interface GateContext {
+  /** Working project directory used for Git and command execution. */
   root: string;
+  /** Task carrying the approved zone and base revision. */
   task: TaskState;
+  /** Effective configuration selected for the check. */
   config: Config;
+  /** Environment supplied to setup, generation and test commands. */
   parentEnv?: NodeJS.ProcessEnv;
 }
 
+/** Build a gate result for a check that could not establish an outcome. */
 const blocked = (name: GateName, reason: string, started: number, details?: unknown): GateResult => ({
   name,
   outcome: "blocked",
@@ -65,6 +82,7 @@ function precheck(name: GateName, ctx: GateContext, started: number): GateResult
   return undefined;
 }
 
+/** Compare changes since the base against the approved write globs and generated outputs. */
 export function zoneGate(ctx: GateContext): GateResult {
   const started = Date.now();
   const pre = precheck("zone", ctx, started);
@@ -84,13 +102,19 @@ export function zoneGate(ctx: GateContext): GateResult {
     : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
 }
 
+/** Process result and log used to classify a test or setup phase. */
 interface TestRun {
+  /** Process exit status, or null if normal completion was unavailable. */
   exitCode: number | null;
+  /** Whether the configured time budget expired. */
   timedOut: boolean;
+  /** Whether terminating the process tree could not be confirmed. */
   killFailed?: boolean;
+  /** Log file for the command in this phase. */
   log: string;
 }
 
+/** Execute a configured command in the given directory, enforce the test timeout and close its log. */
 export async function runCommand(ctx: GateContext, command: string, cwd: string, label: string): Promise<TestRun> {
   const log = openLog(ctx.root, label, ctx.task.id);
   try {
@@ -111,13 +135,16 @@ export async function runCommand(ctx: GateContext, command: string, cwd: string,
   }
 }
 
+/** Run the trusted generation command when configured and return its process evidence. */
 export async function runGenerate(ctx: GateContext, cwd: string, label: string): Promise<TestRun | undefined> {
   const command = ctx.config.build?.generate;
   if (command) return runCommand(ctx, command, cwd, label);
 }
 
+/** Distinguish an interrupted run from a numeric test exit code. */
 const runError = (r: TestRun) => r.timedOut || r.exitCode === null;
 
+/** Run the test command in the working tree and classify its exit status. */
 export async function testsGate(ctx: GateContext): Promise<GateResult> {
   const started = Date.now();
   const r = await runCommand(ctx, ctx.config.test.command, ctx.root, "gate_tests");
@@ -144,8 +171,12 @@ function assertNoLinkedAncestors(projectDir: string, p: string): void {
   }
 }
 
-/** Copy (or delete) project-relative paths from the working tree into the worktree project dir. Deletions first. */
+/** Copy (or delete) project-relative paths from the working tree into the worktree project dir. Deletions first.
+ * @param projectDir - Project directory inside the disposable Git worktree.
+ * @throws DevflowError on unsupported file types or unsafe destination ancestors.
+ */
 export function applyPaths(root: string, projectDir: string, paths: string[]): void {
+  /** Inspect the source entry without following its final link before ordering copies and deletions. */
   const present = (p: string) => {
     try {
       return lstatSync(join(root, p));
@@ -183,11 +214,16 @@ export function applyPaths(root: string, projectDir: string, paths: string[]): v
   }
 }
 
+/** Decide whether the failing tests-only exit matches the project's accepted red exit codes. */
 function isRed(config: Config, r: TestRun): boolean {
   if (r.exitCode === 0 || r.exitCode === null) return false;
   return config.test.red_exit_codes ? config.test.red_exit_codes.includes(r.exitCode) : true;
 }
 
+/**
+ * Test the clean base, changed tests alone and the full change in a disposable Git worktree.
+ * @returns The gate outcome with evidence from the isolated rollback run.
+ */
 export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
   const started = Date.now();
   const pre = precheck("rollback", ctx, started);
@@ -204,12 +240,14 @@ export async function rollbackGate(ctx: GateContext): Promise<GateResult> {
   try {
     wt = addWorktree(ctx.root, ctx.task.base!);
     const setup = ctx.config.test.setup;
+    /** Run a rollback phase in the disposable checkout and collect its log. */
     const step = async (command: string, label: string) => {
       const r = await runCommand(ctx, command, wt!.projectDir, label);
       logs.push(r.log);
       return r;
     };
 
+    /** Refresh derived files in the rollback checkout before testing a changed snapshot. */
     const regenerate = async () => {
       const r = await runGenerate(ctx, wt!.projectDir, "gate_rollback_generate");
       if (!r) return;

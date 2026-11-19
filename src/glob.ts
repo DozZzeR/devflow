@@ -1,3 +1,5 @@
+/** @file Match repository-relative paths against devflow's supported glob syntax. */
+
 /**
  * Minimal glob → RegExp for project-relative POSIX paths.
  * `**` matches any number of path segments (including none), `*` anything except `/`, `?` one non-`/` char.
@@ -24,6 +26,7 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`, process.platform === "win32" ? "i" : "");
 }
 
+/** Test a path against each permitted pattern until one matches. */
 export function matchesAny(path: string, globs: readonly string[]): boolean {
   const p = path.replace(/\\/g, "/");
   return globs.some((g) => globToRegExp(g).test(p));

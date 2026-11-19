@@ -1,3 +1,5 @@
+/** @file Exercise detached runs, reservation ownership, stale detection and log polling. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -10,8 +12,10 @@ import { fakeAgentBin } from "./fake.js";
 import { gitProject } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Prepare an isolated project for this suite's command executions. */
 function project() {
   const { root } = gitProject();
   const cfgPath = join(root, ".devflow", "config.json");
@@ -22,6 +26,7 @@ function project() {
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   // The agent stays busy long enough that every concurrent start sees the lock held.
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_AGENT_SLEEP: "8000" };
+  /** Execute the compiled CLI in the fixture and return captured output and exit status. */
   const devflow = (...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
     return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
@@ -29,6 +34,7 @@ function project() {
   return { root, env, devflow };
 }
 
+/** Poll the asynchronous fixture until its observable condition is met or the deadline expires. */
 const waitFor = async (cond: () => boolean, ms = 30_000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -53,6 +59,7 @@ test("--detach returns quickly with a run id; log shows output; the lock is rele
 test("simultaneous starts: exactly one wins", async () => {
   const { root, env } = project();
   spawnSync(process.execPath, [CLI, "start", "b2", "Add mul"], { cwd: root, env });
+  /** Launch a competing detached run for the lock contention test. */
   const start = () =>
     new Promise<number | null>((res) => {
       const c = spawn(process.execPath, [CLI, "run", "b2", "--once", "--detach"], { cwd: root, env, stdio: "ignore" });

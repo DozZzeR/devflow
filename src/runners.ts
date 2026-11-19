@@ -1,3 +1,5 @@
+/** @file Translate role contracts into vendor invocations and verify declared output artifacts. */
+
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,19 +11,32 @@ import { openLog } from "./logs.js";
 import { API_KEY_VARS, buildChildEnv, launch } from "./proc.js";
 import { selfScript } from "./jobs.js";
 
+/** Degree of write-scope enforcement provided by the selected runner. */
 export type ScopeMode = "enforced" | "sandbox" | "advisory";
 
+/** Task context, tool permissions and artifact expectations for one role call. */
 export interface RunRequest {
+  /** Project root that owns the task configuration and logs. */
   root: string;
+  /** Logical role label used for log filenames and reports. */
   roleName: string;
+  /** Runner, model and optional command template selected for this call. */
   role: Role;
+  /** Validated settings used to configure the child environment and runner. */
   config: Config;
+  /** Complete role instruction delivered to the child. */
   prompt: string;
+  /** Project-relative write patterns granted to this invocation. */
   write: string[];
+  /** Shell commands authorized for this role where supported by the runner. */
   bash: string[];
+  /** Paths that must be fresh, regular and nonempty after the call. */
   expect: string[];
+  /** Role execution deadline in milliseconds. */
   timeoutMs: number;
+  /** Task ID used to group logs; standalone calls have no task ID. */
   task?: string;
+  /** Environment from which the runner allowlist is derived. */
   parentEnv?: NodeJS.ProcessEnv;
   /** Where the role works (defaults to root). Logs always go to root/.devflow. */
   cwd?: string;
@@ -29,17 +44,29 @@ export interface RunRequest {
   savePrompt?: boolean;
 }
 
+/** Evidence returned by one model invocation for stage classification. */
 export interface RunResult {
+  /** Whether the runner completed successfully and met the output contract. */
   ok: boolean;
+  /** Logical role name used for the invocation. */
   role: string;
+  /** Vendor or custom command that executed the role. */
   runner: Role["runner"];
+  /** Model identifier selected in configuration. */
   model: string;
+  /** Child process status, or null when unavailable. */
   exitCode: number | null;
+  /** Wall-clock duration of the invocation in milliseconds. */
   durationMs: number;
+  /** Whether the deadline triggered process termination. */
   timedOut: boolean;
+  /** Expected paths that were missing, stale, empty, nonregular or outside the project. */
   missingOutputs: { path: string; problem: "missing" | "stale" | "empty" | "not_a_file" | "outside_project" }[];
+  /** Effective enforcement mode of this runner. */
   scope: ScopeMode;
+  /** Whether vendor API keys were eligible for propagation to the role. */
   apiKeyEnv: "stripped" | "kept";
+  /** Location of the redacted process log. */
   log: string;
   /** The timeout kill could not be confirmed; descendants may still be running. */
   killFailed?: boolean;
@@ -49,8 +76,11 @@ export interface RunResult {
 
 /** What a runner needs to launch: command, args and how the scope is applied. */
 export interface Invocation {
+  /** Name of the executable to launch. */
   command: string;
+  /** Ordered command arguments before platform-specific quoting. */
   args: string[];
+  /** Effective model for enforcing the requested permissions. */
   scope: ScopeMode;
   /** Files to write before launch (path → content). */
   files?: Record<string, string>;
@@ -58,6 +88,7 @@ export interface Invocation {
 
 
 
+/** Construct the Claude CLI arguments and tool allowlist for a role. */
 export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash">, settingsPath: string): Invocation {
   const allowed = ["Read", "Grep", "Glob"];
   for (const g of req.write) allowed.push(`Edit(${g})`, `Write(${g})`, `MultiEdit(${g})`);
@@ -75,12 +106,15 @@ export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash"
   return { command: "claude", args, scope: "enforced" };
 }
 
+/** Build the settings JSON that invokes the devflow scope hook before tool use. */
 export function claudeSettings(scopePath: string, node = process.execPath, cliJs = selfScript()): string {
+  /** Quote one executable or path component in the generated hook command. */
   const q = (s: string) => `"${s}"`;
   const command = [q(node), q(cliJs), "hook", "pre-tool-use", "--scope-file", q(scopePath)].join(" ");
   return JSON.stringify({ hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command }] }] } }, null, 2);
 }
 
+/** Construct a Codex exec command using read-only or workspace-write mode for the chosen directory. */
 export function codexInvocation(req: Pick<RunRequest, "role" | "write" | "root"> & { cwd?: string }, ignoreUserConfig: boolean): Invocation {
   const args = [
     "exec",
@@ -95,6 +129,7 @@ export function codexInvocation(req: Pick<RunRequest, "role" | "write" | "root">
   return { command: "codex", args, scope: "sandbox" };
 }
 
+/** Recognize supported substitutions in custom runner command arguments. */
 const PLACEHOLDER = /\{([^}]*)\}/g;
 
 /** Split a template into argv (double or single quotes group words; no shell) and expand placeholders. */
@@ -113,16 +148,22 @@ export function commandInvocation(template: string, values: { model: string; pro
   return { command, args, scope: "advisory" };
 }
 
+/** Pre-run existence and content fingerprint for a single expected artifact. */
 interface Snapshot {
+  /** Whether a filesystem entry was present at the expected path. */
   exists: boolean;
+  /** Byte length when the entry was a regular file. */
   size?: number;
+  /** Content digest used to detect unchanged output of the same size. */
   hash?: string;
 }
 
+/** Compute a SHA-256 digest of an expected artifact's bytes. */
 function hashFile(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+/** Resolve an expected artifact to a path strictly beneath the working root. */
 function insideRoot(root: string, p: string): string | undefined {
   const abs = isAbsolute(p) ? resolve(p) : resolve(root, p);
   const rel = relative(resolve(root), abs);
@@ -130,6 +171,7 @@ function insideRoot(root: string, p: string): string | undefined {
   return abs;
 }
 
+/** Capture a regular file's size and hash, or its absence, before launching a role. */
 function snapshot(root: string, p: string): Snapshot {
   const abs = insideRoot(root, p);
   if (!abs) return { exists: false };
@@ -142,6 +184,7 @@ function snapshot(root: string, p: string): Snapshot {
   }
 }
 
+/** Classify expected artifacts after execution, comparing their bytes with the pre-run snapshot. */
 export function checkOutputs(root: string, expect: string[], before: Map<string, Snapshot>): RunResult["missingOutputs"] {
   const problems: RunResult["missingOutputs"] = [];
   for (const p of expect) {
@@ -167,6 +210,7 @@ export function checkOutputs(root: string, expect: string[], before: Map<string,
   return problems;
 }
 
+/** Reject unsafe write patterns or shell permissions on an invocation with no write scope. */
 export function validateScope(write: string[], bash: string[]): void {
   if (!write.length && bash.length) {
     throw new DevflowError("invalid_scope", "A read-only run (no --write) cannot be given shell commands.");
@@ -181,6 +225,7 @@ export function validateScope(write: string[], bash: string[]): void {
 /** Names allowed through to the child: configured pass list, minus every vendor API key unless opted in. */
 export function passNames(config: Config, runner: Role["runner"]): { names: string[]; apiKeyEnv: "stripped" | "kept" } {
   const allKeys: string[] = [...API_KEY_VARS.claude, ...API_KEY_VARS.codex];
+  /** Identify vendor API key names case-insensitively when filtering opt-in settings. */
   const isKey = (n: string) => allKeys.some((k) => k.toUpperCase() === n.toUpperCase());
   const names = config.runners.env.pass.filter((n) => !isKey(n));
   const optIn =

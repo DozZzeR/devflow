@@ -1,3 +1,5 @@
+/** @file Build fresh plugin distributions and compare their manifests, skills and CLI bundles with the repository. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -7,11 +9,15 @@ import { fileURLToPath } from "node:url";
 import { resolveCommand } from "../src/proc.js";
 import { tempDir } from "./helpers.js";
 
+/** Repository root containing the committed plugin distributions and build script. */
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/** Entry script used to produce a fresh set of plugin artifacts. */
 const BUILD = join(REPO, "scripts", "build-plugins.mjs");
 
+/** Collect sorted portable paths for comparing two plugin directory trees. */
 function files(dir: string): string[] {
   const out: string[] = [];
+  /** Collect relative plugin paths for the bundle comparison. */
   const walk = (d: string) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
@@ -24,8 +30,11 @@ function files(dir: string): string[] {
 }
 
 // Built once at file level: a temp dir created inside a test is removed when that test ends.
+/** Temporary directory populated by the shared plugin build. */
 const BUILT = join(tempDir(), "plugins");
+/** Captured process status and diagnostics of the fixture build. */
 const buildResult = spawnSync(process.execPath, [BUILD, BUILT], { cwd: REPO, encoding: "utf8" });
+/** Assert that the shared build succeeded before examining its artifacts. */
 const fresh = () => {
   assert.equal(buildResult.status, 0, buildResult.stderr);
   return BUILT;

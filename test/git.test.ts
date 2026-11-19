@@ -1,3 +1,5 @@
+/** @file Check changed paths and temporary worktree handling, including nested project roots. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";

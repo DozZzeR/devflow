@@ -1,3 +1,5 @@
+/** @file Validate the contents and permitted scope of an OpenSpec change before plan approval. */
+
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.js";
@@ -9,12 +11,18 @@ import { loadTask, taskDir } from "./store.js";
 import { decidedFeedback, reviewDecisions } from "./plan-nodes.js";
 import { section } from "./prompts.js";
 
+/** Root Markdown artifacts expected in every planned change. */
 export const REQUIRED_PLAN_FILES = ["proposal.md", "design.md", "tasks.md"];
 
+/** Outcome of validating a plan folder and extracting its implementation scope. */
 export interface DesignCheck {
+  /** Whether every enabled plan check passed. */
   ok: boolean;
+  /** Machine-readable first failure reported to design or approval. */
   reason?: string;
+  /** Diagnostic context for the failed check, such as missing paths. */
   details?: unknown;
+  /** Project-relative write globs extracted from a valid design. */
   zone?: string[];
 }
 
@@ -32,6 +40,7 @@ export function openspecCommand(root: string, config: Config): string | undefine
   return undefined;
 }
 
+/** Run strict OpenSpec validation in the project and retain output for failed checks. */
 async function validateWithCli(root: string, id: string, command: string): Promise<{ ok: boolean; output: string }> {
   let output = "";
   const r = await launch({
@@ -49,6 +58,7 @@ async function validateWithCli(root: string, id: string, command: string): Promi
 /**
  * Checks after a design run (and again at approval): required files, fresh spec deltas (when `before` is given),
  * a parsable impact zone, and OpenSpec validation according to `openspec.cli`.
+ * @param before - Optional pre-run hashes used to detect stale design artifacts.
  */
 export async function checkDesign(root: string, id: string, config: Config, before?: Map<string, string>): Promise<DesignCheck> {
   const dir = changeFolder(root, id);

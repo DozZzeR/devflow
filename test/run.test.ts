@@ -1,3 +1,5 @@
+/** @file Drive the full CLI workflow against a local stand-in and inspect persisted state, artifacts and prompts. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,8 +10,10 @@ import { fakeAgentBin } from "./fake.js";
 import { gitProject, sh, write } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Initialize the disposable project, fake executables and command helpers used by this suite. */
 function setup(extra: Record<string, string> = {}, prepare?: (root: string, cfg: any) => void) {
   const { root } = gitProject();
   const cfgPath = join(root, ".devflow", "config.json");
@@ -23,12 +27,16 @@ function setup(extra: Record<string, string> = {}, prepare?: (root: string, cfg:
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   const prompts = join(tempDir(), "prompts");
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
+  /** Run the fixture CLI with additional environment overrides for one invocation. */
   const devflowWith = (more: Record<string, string>, ...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...more }, encoding: "utf8" });
     return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
   };
+  /** Execute the compiled CLI in the fixture and return captured output and exit status. */
   const devflow = (...args: string[]) => devflowWith({}, ...args);
+  /** Load the task's persisted JSON so assertions can inspect transitions and counters. */
   const state = (id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
+  /** Decode the CLI's newline-delimited stage reports for ordered assertions. */
   const lines = (out: string) => out.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
   return { root, devflow, devflowWith, state, lines, prompts };
 }
@@ -74,6 +82,7 @@ test("only the verify prompt receives the committed threat model", () => {
   devflow("approve", "t1c");
   devflow("run", "t1c");
   assert.equal(state("t1c").status, "DONE");
+  /** Find the captured prompt for the requested stage. */
   const text = (stage: string) => {
     const f = readdirSync(prompts).find((n) => n.startsWith(stage));
     assert.ok(f, `no ${stage} prompt`);
@@ -117,12 +126,14 @@ test("verifier edits are discarded; rework returns to implement", () => {
   assert.equal(state("t4").status, "PLAN_APPROVED");
 });
 
+/** Read captured implementation prompts in invocation order. */
 const implementPrompts = (dir: string) =>
   readdirSync(dir)
     .filter((f) => f.startsWith("IMPLEMENT"))
     .sort()
     .map((f) => readFileSync(join(dir, f), "utf8"));
 
+/** Configure a fixture with a custom implement command and a trusted generation step. */
 function generateProject(model: string, generate: string, timeout = 60) {
   const project = setup({}, (root, cfg) => {
     cfg.roles.implement = { runner: "command", model: "local", command: 'node implement.cjs "{prompt_file}"' };
@@ -259,6 +270,7 @@ test("verify regenerates its copy before the verifier and stops on generation fa
       assert.equal(devflow("run", "verifygen").code, 0);
       assert.equal(devflow("approve", "verifygen").code, 0);
       const baseBundle = readFileSync(join(root, "out", "bundle.txt"), "utf8");
+      /** Run the fixture stage and return its first report. */
       const run = () => lines(devflow("run", "verifygen", "--once").out)[0];
       assert.equal(run().outcome, "ok");
       write(root, "out/bundle.txt", baseBundle);

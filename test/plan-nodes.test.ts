@@ -1,3 +1,5 @@
+/** @file Check OpenSpec task replacement and review decisions with sibling and fenced-example cases. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planNodes, replaceNode, reviewDecisions, decidedFeedback } from "../src/plan-nodes.js";

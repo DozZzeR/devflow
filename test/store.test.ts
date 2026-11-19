@@ -1,3 +1,5 @@
+/** @file Check task creation, state loading, schema upgrades and atomic JSON persistence. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,12 +9,14 @@ import { DevflowError } from "../src/errors.js";
 import { createTask, listTaskIds, loadTask, saveTask, taskDir } from "../src/store.js";
 import { NOW, task, tempDir } from "./helpers.js";
 
+/** Prepare an isolated project for this suite's command executions. */
 function project(): string {
   const dir = tempDir();
   initProject(dir);
   return dir;
 }
 
+/** Match the storage error by its stable domain reason. */
 const isReason = (reason: string) => (e: unknown) => e instanceof DevflowError && e.reason === reason;
 
 test("create, load and save round-trip with no temp files left", () => {

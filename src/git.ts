@@ -1,3 +1,5 @@
+/** @file Inspect Git changes and manage temporary checkouts used by verification and rollback. */
+
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +20,7 @@ export function git(cwd: string, args: string[], opts: { allowFail?: boolean } =
   return result;
 }
 
+/** Repository root and project prefix for projects nested inside a Git checkout. */
 export interface RepoInfo {
   /** Absolute repository root. */
   toplevel: string;
@@ -38,11 +41,13 @@ export function repoInfo(root: string): RepoInfo | undefined {
   return { toplevel: resolve(toplevel), prefix };
 }
 
+/** Resolve the current HEAD when a commit exists, for recording the task base. */
 export function headCommit(root: string): string | undefined {
   const r = git(root, ["rev-parse", "--verify", "HEAD"], { allowFail: true });
   return r.code === 0 ? r.stdout.trim() : undefined;
 }
 
+/** Runtime paths omitted from the task's Git change set. */
 const EXCLUDED = [/^\.devflow\/runs(\/|$)/, /^\.devflow\/logs(\/|$)/, /^\.devflow\/jobs(\/|$)/];
 
 /** Project-relative paths changed since `base`: tracked changes (both rename paths) plus untracked, non-ignored files. */
@@ -92,6 +97,7 @@ export function addWorktree(root: string, base: string): { path: string; project
   return { path, projectDir: info.prefix ? join(path, info.prefix) : path };
 }
 
+/** Delay the next cleanup attempt when Windows still holds a worktree file. */
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**

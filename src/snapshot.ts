@@ -1,13 +1,17 @@
+/** @file Bind approvals and test evidence to the plan revision, Git base, configuration and changed content. */
+
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.js";
 import { changeSet } from "./git.js";
 
+/** Hash text or file bytes with SHA-256 for deterministic evidence digests. */
 const sha = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
 /** Hash of the configuration the gates actually used (stable key order). */
 export function configHash(config: Config): string {
+  /** Sort object keys recursively before hashing configuration, preserving array order. */
   const stable = (v: unknown): unknown =>
     Array.isArray(v)
       ? v.map(stable)
@@ -45,6 +49,7 @@ export function normaliseTasks(text: string): string {
   return text.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]").replace(/\r\n/g, "\n");
 }
 
+/** Collect regular files in the plan folder using root-relative portable paths. */
 function walk(dir: string, rootDir: string, out: string[]): void {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, e.name);
@@ -53,6 +58,7 @@ function walk(dir: string, rootDir: string, out: string[]): void {
   }
 }
 
+/** Resolve the OpenSpec change directory for a task. */
 export function changeFolder(root: string, id: string): string {
   return join(root, "openspec", "changes", id);
 }

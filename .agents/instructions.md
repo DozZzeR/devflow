@@ -7,6 +7,7 @@ Read the matching file at the start of a matching task. Do not load all of them 
 
 | Trigger | File |
 |---|---|
+| Adding, changing or reviewing source code, scripts or tests | `.agents/instructions/DOCUMENTATION.instructions.md` |
 | Writing, reviewing or refactoring TypeScript or JavaScript | `.agents/instructions/SOLID.instructions.md` |
 
 Project-specific sets are added the same way: for example DDD for a backend, FDD for a frontend,

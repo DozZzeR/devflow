@@ -1,3 +1,5 @@
+/** @file Exercise delegated plan approval and rejection using fake vendor responses. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -9,8 +11,10 @@ import { fakeAgentBin } from "./fake.js";
 import { gitProject, sh, write } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Initialize the disposable project, fake executables and command helpers used by this suite. */
 function setup(extra: Record<string, string> = {}) {
   const { root } = gitProject();
   const cfgPath = join(root, ".devflow", "config.json");
@@ -23,11 +27,14 @@ function setup(extra: Record<string, string> = {}) {
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   const prompts = join(tempDir(), "prompts");
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
+  /** Execute the compiled CLI in the fixture and return captured output and exit status. */
   const devflow = (...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
     return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
   };
+  /** Load the task's persisted JSON so assertions can inspect transitions and counters. */
   const state = (id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
+  /** Decode the CLI's newline-delimited stage reports for ordered assertions. */
   const lines = (out: string) => out.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
   return { root, devflow, state, lines, prompts };
 }

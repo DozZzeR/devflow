@@ -1,36 +1,48 @@
+/** @file Parse project configuration, choose runner defaults and initialize the project directory. */
+
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { DevflowError } from "./errors.js";
 
+/** Project-local directory containing configuration and runtime records. */
 export const DEVFLOW_DIR = ".devflow";
+/** Filename used for the project configuration. */
 export const CONFIG_FILE = "config.json";
 
+/** Build the configuration schema for one vendor CLI and its model name. */
 const modelRole = (runner: "claude" | "codex") =>
   z.strictObject({ runner: z.literal(runner), model: z.string().min(1) });
 
+/** Validate the command template and model for a custom runner. */
 const commandRole = z.strictObject({
   runner: z.literal("command"),
   model: z.string().min(1),
   command: z.string().min(1),
 });
 
+/** Select role settings by the runner discriminator. */
 export const RoleSchema = z.discriminatedUnion("runner", [
   modelRole("claude"),
   modelRole("codex"),
   commandRole,
 ]);
 
+/** Shared constraint for counts and timeout values that must exceed zero. */
 const positiveInt = z.number().int().positive();
 
+/** Identify a generated-output glob that would escape the permitted configuration scope. */
 function outputGlobProblem(glob: string): boolean {
   const path = glob.replace(/^(?:\.\/)+/, "");
   return !path || path.startsWith("/") || /^[A-Za-z]:/.test(path)
     || path.includes("\\") || path.split("/").includes("..") || path.startsWith(DEVFLOW_DIR);
 }
 
+/** Validate nested project settings and dependencies between generation options. */
 export const ConfigSchema = z.strictObject({
+  /** Language tag used by stage prompts. */
   language: z.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "expected a BCP 47 language tag").default("en"),
+  /** Bindings from workflow roles to runnable model configurations. */
   roles: z.strictObject({
     explore: RoleSchema,
     design: RoleSchema,
@@ -40,11 +52,13 @@ export const ConfigSchema = z.strictObject({
     small: RoleSchema,
     review: RoleSchema.optional(),
   }),
+  /** Attempt budgets and repeated gate failure threshold. */
   limits: z.strictObject({
     implement: positiveInt,
     verify: positiveInt,
     escalate_after: positiveInt,
   }),
+  /** Trusted commands, file globs and exit codes used to establish test evidence. */
   test: z.strictObject({
     command: z.string().min(1),
     paths: z.array(z.string().min(1)).min(1),
@@ -58,6 +72,7 @@ export const ConfigSchema = z.strictObject({
     red_exit_codes: z.array(z.number().int()).min(1).optional(),
     timeout_seconds: positiveInt.max(86_400).default(1800),
   }),
+  /** Optional deterministic generation command and the paths it owns. */
   build: z.strictObject({
     generate: z.string().min(1).optional(),
     outputs: z.array(z.string().refine(
@@ -69,8 +84,11 @@ export const ConfigSchema = z.strictObject({
       ctx.addIssue({ code: "custom", path: ["generate"], message: "required when build.outputs is supplied" });
     }
   }).optional(),
+  /** Policy for invoking the external OpenSpec validator. */
   openspec: z.strictObject({ cli: z.enum(["auto", "on", "off"]) }).optional(),
+  /** Optional retention policy for runner logs. */
   logs: z.strictObject({ keep: positiveInt }).optional(),
+  /** Provider-specific launch options and the environment allowlist. */
   runners: z
     .strictObject({
       claude: z.strictObject({ use_api_key: z.boolean().default(false) }).default({ use_api_key: false }),
@@ -84,11 +102,15 @@ export const ConfigSchema = z.strictObject({
     .default({ claude: { use_api_key: false }, codex: { use_api_key: false, ignore_user_config: false }, env: { pass: [] } }),
 });
 
+/** Validated runner and model selection for one workflow role. */
 export type Role = z.infer<typeof RoleSchema>;
+/** Normalized project settings after schema defaults and validation. */
 export type Config = z.infer<typeof ConfigSchema>;
 
+/** Choice of vendor preset when initializing a project. */
 export type RunnerMode = "mixed" | "claude" | "codex";
 
+/** Initial role assignments for mixed and single-vendor installations. */
 const ROLE_PRESETS = {
   mixed: {
     explore: { runner: "claude", model: "haiku" },
@@ -115,6 +137,7 @@ const ROLE_PRESETS = {
   },
 } as const;
 
+/** Starting values used when creating a project and building configuration fixtures. */
 export const DEFAULT_CONFIG = {
   language: "en",
   roles: ROLE_PRESETS.mixed,
@@ -141,6 +164,7 @@ export function formatIssues(error: z.ZodError): string[] {
   return lines;
 }
 
+/** Apply defaults and convert schema failures into an invalid_config domain error. */
 export function parseConfig(raw: unknown): Config {
   const result = ConfigSchema.safeParse(raw);
   if (!result.success) {
@@ -164,6 +188,7 @@ export function findProjectRoot(start: string): string {
   }
 }
 
+/** Read project JSON and distinguish missing configuration from invalid configuration. */
 export function loadConfig(root: string): Config {
   const file = join(root, DEVFLOW_DIR, CONFIG_FILE);
   let text: string;
@@ -181,10 +206,12 @@ export function loadConfig(root: string): Config {
   return parseConfig(raw);
 }
 
+/** Return an independently mutable default configuration for the requested runner preset. */
 export function defaultConfig(mode: RunnerMode = "mixed") {
   return { ...structuredClone(DEFAULT_CONFIG), roles: structuredClone(ROLE_PRESETS[mode]) };
 }
 
+/** Caller choices and CLI availability used during initialization. */
 export interface InitOptions {
   /** Explicit runner choice; otherwise derived from `detected`. */
   runners?: RunnerMode;
@@ -192,16 +219,24 @@ export interface InitOptions {
   detected: { claude: boolean; codex: boolean };
 }
 
+/** Report filesystem changes and runner selection from initialization. */
 export interface InitResult {
+  /** Absolute directory initialized as the project. */
   root: string;
+  /** Whether this invocation created a new configuration file. */
   configCreated: boolean;
+  /** How the project-local ignore file changed. */
   gitignore: "created" | "updated" | "unchanged";
+  /** Runner preset selected when creating the configuration. */
   runners?: RunnerMode;
+  /** Non-fatal setup conditions to show to the operator. */
   warnings: string[];
 }
 
+/** Runtime directories that initialization adds to the local ignore file. */
 const GITIGNORE_LINES = ["runs/", "logs/", "jobs/"];
 
+/** Inspect the entry itself, including links, or return null if the lookup fails. */
 function lstatOrNull(path: string) {
   try {
     return lstatSync(path);

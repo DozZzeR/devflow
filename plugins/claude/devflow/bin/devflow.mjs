@@ -20456,6 +20456,7 @@ var init_errors3 = __esm({
   "src/errors.ts"() {
     "use strict";
     DevflowError = class extends Error {
+      /** Associate a machine-readable reason and optional details with a human-readable failure. */
       constructor(reason, message, details) {
         super(message);
         this.reason = reason;
@@ -20466,7 +20467,9 @@ var init_errors3 = __esm({
       details;
     };
     UsageError = class extends Error {
+      /** Stable error reason returned for an invalid CLI invocation. */
       reason = "usage";
+      /** Represent malformed command syntax so the CLI can return its usage exit code. */
       constructor(message) {
         super(message);
         this.name = "UsageError";
@@ -20604,7 +20607,9 @@ var init_config = __esm({
     ]);
     positiveInt = external_exports.number().int().positive();
     ConfigSchema = external_exports.strictObject({
+      /** Language tag used by stage prompts. */
       language: external_exports.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "expected a BCP 47 language tag").default("en"),
+      /** Bindings from workflow roles to runnable model configurations. */
       roles: external_exports.strictObject({
         explore: RoleSchema,
         design: RoleSchema,
@@ -20614,11 +20619,13 @@ var init_config = __esm({
         small: RoleSchema,
         review: RoleSchema.optional()
       }),
+      /** Attempt budgets and repeated gate failure threshold. */
       limits: external_exports.strictObject({
         implement: positiveInt,
         verify: positiveInt,
         escalate_after: positiveInt
       }),
+      /** Trusted commands, file globs and exit codes used to establish test evidence. */
       test: external_exports.strictObject({
         command: external_exports.string().min(1),
         paths: external_exports.array(external_exports.string().min(1)).min(1),
@@ -20638,6 +20645,7 @@ var init_config = __esm({
         red_exit_codes: external_exports.array(external_exports.number().int()).min(1).optional(),
         timeout_seconds: positiveInt.max(86400).default(1800)
       }),
+      /** Optional deterministic generation command and the paths it owns. */
       build: external_exports.strictObject({
         generate: external_exports.string().min(1).optional(),
         outputs: external_exports.array(external_exports.string().refine(
@@ -20649,8 +20657,11 @@ var init_config = __esm({
           ctx.addIssue({ code: "custom", path: ["generate"], message: "required when build.outputs is supplied" });
         }
       }).optional(),
+      /** Policy for invoking the external OpenSpec validator. */
       openspec: external_exports.strictObject({ cli: external_exports.enum(["auto", "on", "off"]) }).optional(),
+      /** Optional retention policy for runner logs. */
       logs: external_exports.strictObject({ keep: positiveInt }).optional(),
+      /** Provider-specific launch options and the environment allowlist. */
       runners: external_exports.strictObject({
         claude: external_exports.strictObject({ use_api_key: external_exports.boolean().default(false) }).default({ use_api_key: false }),
         codex: external_exports.strictObject({ use_api_key: external_exports.boolean().default(false), ignore_user_config: external_exports.boolean().default(false) }).default({ use_api_key: false, ignore_user_config: false }),
@@ -21055,47 +21066,76 @@ var init_lifecycle = __esm({
       verify: ["pass", "rework", "human"]
     };
     HistoryEntrySchema = external_exports.object({
+      /** Timestamp of the recorded decision. */
       at: external_exports.string(),
+      /** Event category used to interpret the optional history fields. */
       kind: external_exports.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
+      /** Stage associated with the recorded event, when applicable. */
       stage: external_exports.enum(STAGES).optional(),
+      /** First gate that stopped a gate run. */
       gate: external_exports.string().optional(),
+      /** Serialized gate evidence or attribution of a model or implementer decision. */
       results: external_exports.string().optional(),
+      /** Reported completion or gate outcome. */
       outcome: external_exports.string().optional(),
+      /** Prior tier or value for a recorded change. */
       from: external_exports.string().optional(),
+      /** Target tier, revision or routing destination. */
       to: external_exports.string().optional(),
+      /** Operator feedback or machine-readable explanation. */
       reason: external_exports.string().optional(),
+      /** Stable OpenSpec task ID for a scoped plan revision. */
       node: external_exports.string().optional()
     });
     PLAN_CONFLICT_LIMIT = 2;
     COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
     TaskStateSchema = external_exports.strictObject({
+      /** Persistent format version accepted by this reader. */
       schema: external_exports.literal(2),
+      /** Task ID shared by the run directory and OpenSpec change. */
       id: external_exports.string(),
+      /** Original task statement supplied to the roles. */
       description: external_exports.string(),
+      /** Complexity selecting the small or planned workflow. */
       tier: external_exports.enum(TIERS),
+      /** Optional external issue reference. */
       tracker: external_exports.string().optional(),
+      /** Last committed checkpoint used to select the next stage. */
       status: external_exports.enum(STATES),
+      /** Reason to inspect before resuming a task in HUMAN. */
       humanReason: external_exports.string().optional(),
+      /** Recorded attempts per model-driven stage, reset by specific transitions. */
       attempts: external_exports.strictObject({
         explore: external_exports.number().int().nonnegative(),
         design: external_exports.number().int().nonnegative(),
         implement: external_exports.number().int().nonnegative(),
         verify: external_exports.number().int().nonnegative()
       }),
+      /** Most recent verification outcome and the snapshot it accepted, when available. */
       lastVerdict: external_exports.strictObject({ outcome: external_exports.string(), at: external_exports.string(), snapshot: external_exports.string().optional() }).optional(),
+      /** Hash binding plan approval to the reviewed revision and artifacts. */
       planDigest: external_exports.string().optional(),
+      /** Revision used to reject stale approval and scope plan feedback. */
       planRevision: external_exports.number().int().positive().optional(),
+      /** Owner of plan approval, defaulting to the human when absent. */
       approval: external_exports.enum(["human", "model"]).optional(),
+      /** Content digest accepted by the last successful full gate run. */
       gatesSnapshot: external_exports.string().optional(),
+      /** Git commit used for change detection and rollback verification. */
       base: external_exports.string().optional(),
+      /** Approved project-relative write globs. */
       zone: external_exports.array(external_exports.string()).optional(),
+      /** Escalation and invalidation counts tracked separately from role attempts. */
       counters: external_exports.strictObject({
         gatesFailedInARow: external_exports.number().int().nonnegative(),
         reworks: external_exports.number().int().nonnegative(),
         staleEvidence: external_exports.number().int().nonnegative().default(0)
       }),
+      /** Timestamp recorded when the task was started. */
       createdAt: external_exports.string(),
+      /** Timestamp checked before recording a long-running stage result. */
       updatedAt: external_exports.string(),
+      /** Ordered events used to explain routing, reviews and retries. */
       history: external_exports.array(HistoryEntrySchema)
     });
     ZERO_ATTEMPTS = { explore: 0, design: 0, implement: 0, verify: 0 };
@@ -21260,6 +21300,7 @@ function openLog(root, role2, task) {
   let closed = false;
   return {
     path,
+    /** Buffer incomplete lines separately for each stream before redaction. */
     write(chunk, stream = "stdout") {
       if (closed) return;
       pending[stream] += chunk;
@@ -21269,6 +21310,7 @@ function openLog(root, role2, task) {
         pending[stream] = pending[stream].slice(lastNewline + 1);
       }
     },
+    /** Flush pending output once and close the file descriptor. */
     close() {
       if (closed) return;
       closed = true;

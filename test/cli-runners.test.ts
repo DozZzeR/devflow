@@ -1,3 +1,5 @@
+/** @file Exercise role execution and diagnostics through the actual CLI using fake vendor executables. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -7,8 +9,10 @@ import { fileURLToPath } from "node:url";
 import { fakeBin, testEnv } from "./fake.js";
 import { tempDir } from "./helpers.js";
 
+/** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
 
+/** Execute the compiled CLI in the fixture and return captured output and exit status. */
 function devflow(cwd: string, env: NodeJS.ProcessEnv, args: string[], input = "") {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env, encoding: "utf8", input });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
@@ -55,6 +59,7 @@ test("exec-role fails when the expected output is missing even if the CLI exits 
 
 test("exec-role rejects shell in a read-only run, unknown roles and escaping task ids", () => {
   const { root, env } = project();
+  /** Extract the machine-readable domain reason from a CLI error response. */
   const reasonOf = (r: { err: string }) => JSON.parse(r.err).error.reason;
   assert.equal(reasonOf(devflow(root, env, ["exec-role", "verify", "--prompt-file", "prompt.md", "--allow-bash", "npm test", "--json"])), "invalid_scope");
   assert.equal(reasonOf(devflow(root, env, ["exec-role", "nope", "--prompt-file", "prompt.md", "--json"])), "unknown_role");

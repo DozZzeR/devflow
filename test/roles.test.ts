@@ -1,3 +1,5 @@
+/** @file Check role proposals, cross-vendor verification and validation of saved role overrides. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -7,7 +9,9 @@ import { DevflowError } from "../src/errors.js";
 import { proposeLayout, RANKING, setRole, type Candidate } from "../src/roles.js";
 import { tempDir } from "./helpers.js";
 
+/** Select ranked candidates provided by a single vendor. */
 const by = (runner: "claude" | "codex") => RANKING.filter((c) => c.runner === runner);
+/** Compare candidate identities by vendor and model together. */
 const k = (c: Candidate) => `${c.runner}/${c.model}`;
 
 test("both vendors: strongest on design_complex/review, no Fable for design, verify on the other vendor", () => {

@@ -1,3 +1,5 @@
+/** @file Check configuration validation, initialization presets and filesystem behavior. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -7,8 +9,10 @@ import { DEFAULT_CONFIG, findProjectRoot, initProject, loadConfig, parseConfig }
 import { DevflowError } from "../src/errors.js";
 import { tempDir } from "./helpers.js";
 
+/** Create a fresh configuration for one validation case. */
 const base = () => structuredClone(DEFAULT_CONFIG) as Record<string, any>;
 
+/** Collect the configuration validation diagnostics for a proposed input. */
 function problems(raw: unknown): string[] {
   try {
     parseConfig(raw);
@@ -113,6 +117,7 @@ test("init upgrades an old .devflow/.gitignore without touching existing lines",
 });
 
 test("init picks runners from detected CLIs or an override", () => {
+  /** Read the role assignments created by initialization in a test directory. */
   const roles = (d: string) => loadConfig(d).roles;
   const codexOnly = tempDir();
   initProject(codexOnly, { detected: { claude: false, codex: true } });

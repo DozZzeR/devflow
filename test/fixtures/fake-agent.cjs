@@ -1,3 +1,5 @@
+/** @file Respond to role prompts with deterministic artifacts and configurable failure outcomes. */
+
 // Fake agent CLI (`codex` / `claude`) for run-loop tests. Reads the devflow prompt from stdin,
 // recognises the stage from the role line and writes plausible outputs.
 const fs = require("node:fs");
@@ -13,11 +15,13 @@ if ((args[0] === "login" || args[0] === "auth") && args[1] === "status") {
   process.exit(0);
 }
 
+/** Create parent directories and write an artifact for this fake agent run. */
 const write = (p, text) => {
   fs.mkdirSync(path.dirname(path.resolve(p)), { recursive: true });
   fs.writeFileSync(p, text);
 };
 
+/** Accumulate the model prompt from stdin before selecting scripted role behavior. */
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => (prompt += c));

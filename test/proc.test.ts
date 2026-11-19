@@ -1,3 +1,5 @@
+/** @file Exercise process lookup, environment filtering, shell quoting and timeout teardown. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";

@@ -1,10 +1,15 @@
+/** @file Resolve the threat model and project guidance that an independent verifier is allowed to see. */
+
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { git, repoInfo } from "./git.js";
 
+/** OpenSpec configuration source preferred for verifier context. */
 const YAML_PATH = "openspec/config.yaml";
+/** Fallback Markdown context source in the devflow directory. */
 const FILE_PATH = ".devflow/context.md";
 
+/** Apply folded-scalar line handling to a supported YAML context value. */
 function foldLines(lines: string[]): string {
   let result = "";
   let previous: string | undefined;

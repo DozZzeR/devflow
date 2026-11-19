@@ -1,3 +1,5 @@
+/** @file Check tool permissions, path resolution and denial responses for the Claude scope hook. */
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -5,8 +7,11 @@ import { join, resolve } from "node:path";
 import { decide, runHook, type Scope } from "../src/hook.js";
 import { tempDir } from "./helpers.js";
 
+/** Fixture project root used to resolve hook paths in scope assertions. */
 const root = resolve("/proj");
+/** Write and shell permissions exercised by the hook decisions. */
 const scope: Scope = { root, write: ["src/**", "openspec/changes/x/tasks.md"], bash: ["npm test"] };
+/** Read the boolean decision returned for a simulated tool invocation. */
 const allowed = (tool: string, input: Record<string, unknown>) => decide(scope, tool, input).allow;
 
 test("read-only tools are allowed", () => {

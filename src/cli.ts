@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+/** @file Dispatch CLI commands, translate errors to exit codes and expose the same entry point to MCP. */
+
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -21,6 +23,7 @@ import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
 
+/** Help text emitted for the CLI entry point. */
 const USAGE = `devflow — role-separated dev workflow
 
 Usage:
@@ -47,16 +50,24 @@ Usage:
 
 Global: --json (machine-readable errors), --help, --version`;
 
+/** Positional arguments, single-value switches and repeatable options from one invocation. */
 interface Parsed {
+  /** Command and operands in their original order. */
   positional: string[];
+  /** Boolean and single-value switches keyed by option name. */
   flags: Map<string, string | true>;
+  /** Values of repeatable switches in input order. */
   lists: Map<string, string[]>;
 }
 
+/** Switches consuming one inline or following argument. */
 const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "node", "revision", "to", "command"]);
+/** Switches accumulating multiple values across occurrences. */
 const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
+/** Switches enabled by their presence. */
 const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow", "apply"]);
 
+/** Parse long options and preserve command operands. Unknown options and missing values raise UsageError. */
 export function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
@@ -82,20 +93,24 @@ export function parseArgs(argv: string[]): Parsed {
   return { positional, flags, lists };
 }
 
+/** Return a string-valued option or undefined when the switch has no string value. */
 function str(p: Parsed, name: string): string | undefined {
   const v = p.flags.get(name);
   return typeof v === "string" ? v : undefined;
 }
 
+/** Enforce the permitted operand count before dispatching a command. */
 function arity(args: string[], min: number, max: number, usage: string): void {
   if (args.length < min || args.length > max) throw new UsageError(`Usage: devflow ${usage}`);
 }
 
+/** Validate a CLI tier name and report a usage error for unsupported values. */
 function asTier(value: string): Tier {
   if (!(TIERS as readonly string[]).includes(value)) throw new UsageError(`Tier must be one of: ${TIERS.join(", ")}`);
   return value as Tier;
 }
 
+/** Validate a CLI stage name before recording a manual completion. */
 function asStage(value: string): Stage {
   if (!(STAGES as readonly string[]).includes(value)) throw new UsageError(`Stage must be one of: ${STAGES.join(", ")}`);
   return value as Stage;
@@ -104,6 +119,7 @@ function asStage(value: string): Stage {
 /** Set by the plugin bundler; absent when running from dist/. */
 declare const __DEVFLOW_VERSION__: string | undefined;
 
+/** Read the embedded bundle version or the development package version. */
 function version(): string {
   if (typeof __DEVFLOW_VERSION__ !== "undefined") return __DEVFLOW_VERSION__;
   const here = dirname(fileURLToPath(import.meta.url));
@@ -111,20 +127,29 @@ function version(): string {
   return pkg.version;
 }
 
+/** Host boundary used to run a command from the terminal, MCP or tests. */
 export interface Io {
+  /** Starting directory for project discovery. */
   cwd: string;
+  /** Parent environment available to runner and process adapters. */
   env: NodeJS.ProcessEnv;
+  /** Supply the complete prompt or hook event when requested by the command. */
   readStdin: () => Promise<string>;
+  /** Receive one piece of normal command output. */
   out: (s: string) => void;
+  /** Receive formatted usage and operational errors. */
   err: (s: string) => void;
+  /** Supply a timestamp for state transitions and run metadata. */
   now: () => string;
 }
 
+/** Find the project above the caller's directory and validate its configuration. */
 function project(io: Io): { root: string; config: Config } {
   const root = findProjectRoot(io.cwd);
   return { root, config: loadConfig(root) };
 }
 
+/** Load a task, apply one lifecycle event and persist its resulting state. */
 function apply(io: Io, id: string, event: Event): TaskState {
   const { root, config } = project(io);
   const task = loadTask(root, id);
@@ -133,6 +158,7 @@ function apply(io: Io, id: string, event: Event): TaskState {
   return next;
 }
 
+/** Project stored state and the next-stage decision into the CLI status response. */
 function summary(task: TaskState, config: Config) {
   const n = nextStage(task, config);
   return {
@@ -147,6 +173,7 @@ function summary(task: TaskState, config: Config) {
   };
 }
 
+/** Dispatch one invocation using the supplied host I/O and return its process exit code. */
 export async function run(argv: string[], io: Io): Promise<number> {
   if (argv[0] === "__job") {
     // Internal: run a command as a background job and record its exit code.
@@ -471,6 +498,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const path = latestRunLog(root, id);
         if (!path) throw new DevflowError("no_log", `Task ${id} has no run log yet.`);
         let offset = 0;
+        /** Emit newly appended run-log content when a client follows a background run. */
         const dump = () => {
           const text = readFileSync(path, "utf8");
           if (text.length > offset) io.out(text.slice(offset).replace(/\n$/, ""));
@@ -545,6 +573,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
   }
 }
 
+/** Distinguish starting the CLI process from importing its in-process command runner. */
 const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === (await import("node:fs")).realpathSync(process.argv[1]);
 if (invokedDirectly) {
   process.exitCode = await run(process.argv.slice(2), {

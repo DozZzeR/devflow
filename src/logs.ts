@@ -1,9 +1,12 @@
+/** @file Create per-run logs and redact sensitive values before buffered output is persisted. */
+
 import { closeSync, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
 import { validateId } from "./store.js";
 
+/** Token and credential patterns replaced before writing a log line. */
 const REDACTIONS: [RegExp, string][] = [
   [/sk-ant-[A-Za-z0-9_-]{10,}/g, "[REDACTED]"],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, "[REDACTED]"],
@@ -12,6 +15,7 @@ const REDACTIONS: [RegExp, string][] = [
   [/((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',}]{8,}/gi, "$1[REDACTED]"],
 ];
 
+/** Mask recognized secrets in text while leaving other diagnostic output readable. */
 export function redact(text: string): string {
   return REDACTIONS.reduce((t, [re, rep]) => t.replace(re, rep), text);
 }
@@ -35,9 +39,13 @@ function safeMkdirs(root: string, parts: string[]): string {
   return dir;
 }
 
+/** Handle to one exclusively created log and its per-stream buffers. */
 export interface LogFile {
+  /** Filesystem location returned in stage or runner diagnostics. */
   path: string;
+  /** Append a chunk to its stream buffer and write redacted complete lines. */
   write(chunk: string, stream?: "stdout" | "stderr"): void;
+  /** Flush and redact the final partial lines, then release the descriptor. */
   close(): void;
 }
 
@@ -75,6 +83,7 @@ export function openLog(root: string, role: string, task?: string): LogFile {
   let closed = false;
   return {
     path,
+    /** Buffer incomplete lines separately for each stream before redaction. */
     write(chunk: string, stream: "stdout" | "stderr" = "stdout") {
       if (closed) return;
       pending[stream] += chunk;
@@ -84,6 +93,7 @@ export function openLog(root: string, role: string, task?: string): LogFile {
         pending[stream] = pending[stream].slice(lastNewline + 1);
       }
     },
+    /** Flush pending output once and close the file descriptor. */
     close() {
       if (closed) return;
       closed = true;

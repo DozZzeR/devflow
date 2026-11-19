@@ -1,3 +1,5 @@
+/** @file Track detached CLI jobs that run independently of a task's stage loop. */
+
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -8,17 +10,27 @@ import { newRunId } from "./background.js";
 import { openLog } from "./logs.js";
 import { writeFileAtomic } from "./store.js";
 
+/** Persistent metadata for a detached command and its completion. */
 export interface JobInfo {
+  /** Validated identifier used to locate this job's metadata. */
   jobId: string;
+  /** CLI subcommand and arguments being run by the child. */
   args: string[];
+  /** Time the parent created the job. */
   startedAt: string;
+  /** File receiving the detached child's standard streams. */
   log: string;
+  /** Child process identifier once available. */
   pid?: number;
+  /** Completion status recorded by the child; null represents an unavailable exit code. */
   exitCode?: number | null;
+  /** Timestamp recorded on completion, absent while the result is pending. */
   endedAt?: string;
 }
 
+/** Resolve the project-local directory for detached job metadata. */
 const jobsDir = (root: string) => join(root, DEVFLOW_DIR, "jobs");
+/** Validate a job ID before resolving its JSON record. */
 const jobFile = (root: string, jobId: string) => {
   if (!/^[0-9]{14}-[0-9a-f]{6}$/.test(jobId)) throw new DevflowError("invalid_job", `Invalid job id "${jobId}".`);
   return join(jobsDir(root), `${jobId}.json`);
@@ -34,12 +46,14 @@ export const selfScript = (): string => {
   return join(dirname(fileURLToPath(import.meta.url)), "cli.js");
 };
 
+/** Load the requested job record or raise no_job when it is missing. */
 export function readJob(root: string, jobId: string): JobInfo {
   const f = jobFile(root, jobId);
   if (!existsSync(f)) throw new DevflowError("no_job", `Job ${jobId} not found.`);
   return JSON.parse(readFileSync(f, "utf8")) as JobInfo;
 }
 
+/** Check whether the recorded child process still exists. */
 function alive(pid: number | undefined): boolean {
   if (!pid) return false;
   try {
@@ -50,6 +64,7 @@ function alive(pid: number | undefined): boolean {
   }
 }
 
+/** Report active only while the job has no end timestamp and its PID is alive. */
 export function jobActive(job: JobInfo): boolean {
   return job.endedAt === undefined && alive(job.pid);
 }
@@ -86,6 +101,7 @@ export function finishJob(root: string, jobId: string, exitCode: number | null):
   writeFileAtomic(jobFile(root, jobId), JSON.stringify({ ...info, pid: info.pid ?? process.pid, exitCode, endedAt: new Date().toISOString() }));
 }
 
+/** Return the last lines of a job log for polling clients. */
 export function tail(path: string, lines = 200): string {
   if (!existsSync(path)) return "";
   const all = readFileSync(path, "utf8").split(/\r?\n/);
