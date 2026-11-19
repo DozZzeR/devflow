@@ -40254,12 +40254,59 @@ function reviewDecisions(tasks) {
   }
   return rounds;
 }
+function findingLines(verdict) {
+  const lines = prose(verdict).split(/\r?\n/);
+  const heading = /^ {0,3}#{1,6}[ \t]+/;
+  const sections = lines.flatMap((line, i) => /^ {0,3}#{1,6}[ \t]+Findings(?:[ \t]+#+)?[ \t]*$/i.test(line) ? [i] : []);
+  if (sections.length > 1) throw new DevflowError("invalid_verdict_findings", "The verdict contains multiple Findings sections.");
+  let section2;
+  if (sections.length) {
+    section2 = lines.slice(sections[0] + 1);
+  } else {
+    const testHeading = lines.findIndex((line) => /^ {0,3}#{1,6}[ \t]+(?:test(?:s|ing)?|test[- ]run)\b/i.test(line));
+    section2 = testHeading < 0 ? lines : lines.slice(0, testHeading);
+    const firstHeading = section2.findIndex((line) => heading.test(line));
+    if (firstHeading >= 0 && !section2.slice(0, firstHeading).some((line) => /^[1-9]\d*[.)]\s+\S/.test(line))) {
+      const firstFinding = section2.findIndex((line) => /^[1-9]\d*[.)]\s+(?:[*_]{1,2}|\[)?(?:high|medium|low)\b/i.test(line));
+      section2 = firstFinding < 0 ? [] : section2.slice(firstFinding);
+    }
+  }
+  const end = section2.findIndex((line) => heading.test(line));
+  return end < 0 ? section2 : section2.slice(0, end);
+}
+function verdictFindings(verdict) {
+  const findings = /* @__PURE__ */ new Map();
+  let active;
+  let paragraphOpen = false;
+  for (const line of findingLines(verdict)) {
+    const item = /^([1-9]\d*)[.)][ \t]+(\S.*)$/.exec(line);
+    if (item) {
+      active = "F" + item[1];
+      if (findings.has(active)) throw new DevflowError("invalid_verdict_findings", "Duplicate finding " + active + " in the verdict.");
+      findings.set(active, item[2].trimEnd());
+      paragraphOpen = true;
+    } else if (!line.trim()) {
+      paragraphOpen = false;
+    } else if (active && (paragraphOpen || /^[ \t]+\S/.test(line))) {
+      findings.set(active, findings.get(active) + "\n" + line.trim());
+      paragraphOpen = true;
+    } else {
+      active = void 0;
+    }
+  }
+  if (!findings.size) throw new DevflowError("invalid_verdict_findings", "Expected numbered entries in the verdict's Findings section.");
+  return findings;
+}
 function decidedFeedback(rows, verdict) {
-  const ids = [...prose(verdict).matchAll(/^(\d+)[.)]\s+\S/gm)].map((m) => "F" + m[1]);
-  if (!ids.length || ids.length !== rows.length || rows.some((r) => !ids.includes(r.finding))) {
+  const findings = verdictFindings(verdict);
+  if (rows.length !== findings.size || new Set(rows.map((r) => r.finding)).size !== rows.length || rows.some((r) => !findings.has(r.finding))) {
     throw invalid("Decide each numbered finding of this verify round exactly once.");
   }
-  return rows.map((r) => r.finding + " | " + r.action + " | " + r.node + " | " + r.reason).join("\n");
+  return rows.map((r) => {
+    const decision = [r.finding, r.action, r.node, r.reason].join(" | ");
+    if (r.action !== "fix") return decision;
+    return decision + "\n  Original finding:\n> " + findings.get(r.finding).replaceAll("\n", "\n> ");
+  }).join("\n");
 }
 
 // src/prompts.ts
@@ -40324,7 +40371,7 @@ design.md and the .devflow/ folder are intentionally absent from this copy (you 
 Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.
 Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
-Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then numbered findings (severity high/medium/low, file:line, concrete fix). REWORK needs at least one concrete fix. No praise.
+Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
 
 {{context}}
 {{previousVerdict}}
@@ -40418,7 +40465,8 @@ async function checkDesign(root, id, config2, before) {
       }
     }
   } catch (e) {
-    return { ok: false, reason: "invalid_plan_nodes", details: { message: e.message } };
+    const reason = e instanceof DevflowError && e.reason === "invalid_verdict_findings" ? e.reason : "invalid_plan_nodes";
+    return { ok: false, reason, details: { message: e.message } };
   }
   if (before) {
     const after = changeFileHashes(root, id);

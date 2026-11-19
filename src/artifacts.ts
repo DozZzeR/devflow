@@ -76,7 +76,8 @@ export async function checkDesign(root: string, id: string, config: Config, befo
       }
     }
   } catch (e) {
-    return { ok: false, reason: "invalid_plan_nodes", details: { message: (e as Error).message } };
+    const reason = e instanceof DevflowError && e.reason === "invalid_verdict_findings" ? e.reason : "invalid_plan_nodes";
+    return { ok: false, reason, details: { message: (e as Error).message } };
   }
 
   if (before) {

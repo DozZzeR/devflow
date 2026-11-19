@@ -94,11 +94,66 @@ export function reviewDecisions(tasks: string) {
   return rounds;
 }
 
-/** Refuse incomplete or invented decisions instead of silently dropping a review finding. */
+/** Select the explicit Findings section, or the numbered findings in a pre-section-format report. */
+function findingLines(verdict: string): string[] {
+  const lines = prose(verdict).split(/\r?\n/);
+  const heading = /^ {0,3}#{1,6}[ \t]+/;
+  const sections = lines.flatMap((line, i) => /^ {0,3}#{1,6}[ \t]+Findings(?:[ \t]+#+)?[ \t]*$/i.test(line) ? [i] : []);
+  if (sections.length > 1) throw new DevflowError("invalid_verdict_findings", "The verdict contains multiple Findings sections.");
+  let section: string[];
+  if (sections.length) {
+    section = lines.slice(sections[0]! + 1);
+  } else {
+    const testHeading = lines.findIndex(line => /^ {0,3}#{1,6}[ \t]+(?:test(?:s|ing)?|test[- ]run)\b/i.test(line));
+    section = testHeading < 0 ? lines : lines.slice(0, testHeading);
+    const firstHeading = section.findIndex(line => heading.test(line));
+    if (firstHeading >= 0 && !section.slice(0, firstHeading).some(line => /^[1-9]\d*[.)]\s+\S/.test(line))) {
+      const firstFinding = section.findIndex(line => /^[1-9]\d*[.)]\s+(?:[*_]{1,2}|\[)?(?:high|medium|low)\b/i.test(line));
+      section = firstFinding < 0 ? [] : section.slice(firstFinding);
+    }
+  }
+  const end = section.findIndex(line => heading.test(line));
+  return end < 0 ? section : section.slice(0, end);
+}
+
+/** Index round-local IDs and their evidence, including indented details and wrapped text. */
+function verdictFindings(verdict: string): Map<string, string> {
+  const findings = new Map<string, string>();
+  let active: string | undefined;
+  let paragraphOpen = false;
+  for (const line of findingLines(verdict)) {
+    const item = /^([1-9]\d*)[.)][ \t]+(\S.*)$/.exec(line);
+    if (item) {
+      active = "F" + item[1];
+      if (findings.has(active)) throw new DevflowError("invalid_verdict_findings", "Duplicate finding " + active + " in the verdict.");
+      findings.set(active, item[2]!.trimEnd());
+      paragraphOpen = true;
+    } else if (!line.trim()) {
+      paragraphOpen = false;
+    } else if (active && (paragraphOpen || /^[ \t]+\S/.test(line))) {
+      findings.set(active, findings.get(active) + "\n" + line.trim());
+      paragraphOpen = true;
+    } else {
+      active = undefined;
+    }
+  }
+  if (!findings.size) throw new DevflowError("invalid_verdict_findings", "Expected numbered entries in the verdict's Findings section.");
+  return findings;
+}
+
+/**
+ * Pair each approved fix with the verifier's original evidence. Include only the decision for deferred
+ * or dismissed findings so superseded instructions do not return in implementation or later verification.
+ */
 export function decidedFeedback(rows: ReviewDecision[], verdict: string): string {
-  const ids = [...prose(verdict).matchAll(/^(\d+)[.)]\s+\S/gm)].map(m => "F" + m[1]);
-  if (!ids.length || ids.length !== rows.length || rows.some(r => !ids.includes(r.finding))) {
+  const findings = verdictFindings(verdict);
+  if (rows.length !== findings.size || new Set(rows.map(r => r.finding)).size !== rows.length ||
+      rows.some(r => !findings.has(r.finding))) {
     throw invalid("Decide each numbered finding of this verify round exactly once.");
   }
-  return rows.map(r => r.finding + " | " + r.action + " | " + r.node + " | " + r.reason).join("\n");
+  return rows.map(r => {
+    const decision = [r.finding, r.action, r.node, r.reason].join(" | ");
+    if (r.action !== "fix") return decision;
+    return decision + "\n  Original finding:\n> " + findings.get(r.finding)!.replaceAll("\n", "\n> ");
+  }).join("\n");
 }

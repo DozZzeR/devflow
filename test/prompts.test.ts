@@ -156,3 +156,7 @@ test("design checks run a project-local openspec and report its failure", async 
     process.env.PATH = prevPath;
   }
 });
+
+test("verify requests a separate Findings section before any test execution notes", () => {
+  assert.match(TEMPLATES.verify, /## Findings/);
+});

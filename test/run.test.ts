@@ -535,6 +535,7 @@ test("approved finding decisions replace obsolete instructions while a new verif
   assert.equal(impl.code, 0, impl.err);
   const prompt = implementPrompts(prompts).at(-1)!;
   assert.match(prompt, /Check negative inputs/);
+  assert.match(prompt, /fix the arithmetic/);
   assert.doesNotMatch(prompt, /OBSOLETE-RAW-INSTRUCTION/);
   devflow("run", "decisions", "--once");
   devflowWith({ FAKE_VERDICT: "REWORK" }, "run", "decisions", "--once");

@@ -12,6 +12,8 @@ Status: early (0.1.0). CLI, runners, gates, the `devflow run` loop, an MCP serve
 
 Use `devflow approve <id> --revision 3 --reject "Clarify the failure case" --node 2.1` to revise a single task. Design receives the full plan and writes one replacement in a temporary directory. Devflow inserts only that unchecked task and its indented details. Omit `--node` for a change to shared requirements, scope or dependencies across tasks. A task stopped at `plan_conflicts_limit` can use the same revision-checked rejection to return to design.
 
+The verify verdict groups numbered findings under `## Findings`. Other sections can contain their own lists. A fix carries the original finding and the approved instruction into implement and later verification. Deferred and dismissed findings carry only their approved decision.
+
 For numbered verify findings, a revised `tasks.md` may record a decision for each finding. IDs belong to a specific review round. Each fix names an existing checkbox. Deferred and dismissed findings carry the reason and use `-` for the node.
 
 ```markdown

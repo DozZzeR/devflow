@@ -238,3 +238,17 @@ When `build.generate` is configured, verify SHALL run it in the temporary worktr
 
 - **WHEN** the generate command exits non-zero in the verify worktree
 - **THEN** the task records `verify human` with `verify_generate_failed` and the worktree is removed
+
+### Requirement: Findings referenced by plan decisions
+
+The built-in verify prompt SHALL request a `## Findings` section containing one unindented numbered item per finding. When an OpenSpec plan records decisions for a review round, devflow SHALL resolve those IDs from that section. Previously saved verdicts with a numbered list before the first Markdown heading SHALL remain usable. Each finding SHALL have exactly one decision. An ambiguous finding ID in the verdict SHALL be diagnosed separately from a missing decision in the plan.
+
+#### Scenario: Test execution has its own numbered list
+
+- **WHEN** both the Findings section and a later test section contain an item numbered 1
+- **THEN** F1 refers only to the item in Findings
+
+#### Scenario: An approved fix preserves its evidence
+
+- **WHEN** implement or a later verify round receives approved decisions
+- **THEN** each fix includes the original finding and the approved instruction, and deferred or dismissed items carry only their approved decisions

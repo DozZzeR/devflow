@@ -100,7 +100,7 @@ design.md and the .devflow/ folder are intentionally absent from this copy (you 
 Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.
 Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
-Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then numbered findings (severity high/medium/low, file:line, concrete fix). REWORK needs at least one concrete fix. No praise.
+Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
 
 {{context}}
 {{previousVerdict}}
