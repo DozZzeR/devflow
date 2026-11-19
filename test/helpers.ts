@@ -33,6 +33,14 @@ export const verify = (outcome: "pass" | "rework" | "human"): Event =>
 /** A temp dir removed after the test file finishes. */
 export function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "devflow-test-"));
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(() => {
+    // On Windows a just-killed background process can hold the folder for a moment: retry, then leave it
+    // to the OS temp cleanup instead of failing a test over a leftover temp folder.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EPERM" && (e as NodeJS.ErrnoException).code !== "EBUSY") throw e;
+    }
+  });
   return dir;
 }
