@@ -108,7 +108,12 @@ export function detachWorktreeGit(path: string): void {
   rmSync(join(path, ".git"), { force: true, recursive: true });
 }
 
-/** Remove a detached worktree directory and drop its stale registration. */
+/**
+ * Remove the verify copy and its temporary parent, then prune stale Git registrations.
+ * @param path - The worktree path returned by addWorktree for this copy. A caller recovering
+ * a path from persisted state must first verify ownership of both the copy and its parent.
+ * @returns False if the copy still exists after the bounded retries.
+ */
 export function removeDetached(root: string, path: string): boolean {
   for (let attempt = 0; attempt < 3 && existsSync(path); attempt++) {
     try {
