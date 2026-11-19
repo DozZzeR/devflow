@@ -4,6 +4,21 @@ Role-separated, multi-model development workflow with deterministic gates. Plans
 
 Status: early (0.1.0). CLI, runners, gates, the `devflow run` loop, an MCP server and Claude Code / Codex plugins exist. Design: [docs/SPEC.md](docs/SPEC.md).
 
+## Revising one part of an OpenSpec plan
+
+`devflow nodes <id>` (MCP: `devflow_nodes`) lists the stable checkbox IDs, text and completion state from the change's `tasks.md`. The designer decomposes work after exploration. Each node names a scenario, dependencies when relevant, and its test. The whole OpenSpec change remains the unit of approval and integration testing.
+
+Use `devflow approve <id> --revision 3 --reject "Clarify the failure case" --node 2.1` to revise a single task. Design receives the full plan and writes one replacement in a temporary directory. Devflow inserts only that unchecked task and its indented details. Omit `--node` for a change to shared requirements, scope or dependencies across tasks. A task stopped at `plan_conflicts_limit` can use the same revision-checked rejection to return to design.
+
+For numbered verify findings, a revised `tasks.md` may record a decision for each finding. IDs belong to a specific review round. Each fix names an existing checkbox. Deferred and dismissed findings carry the reason and use `-` for the node.
+
+```markdown
+## Review decisions (round 1)
+
+- F1 | fix | 2.1 | Distinguish a timeout from a usage limit.
+- F2 | defer | - | Display formatting belongs to a later change.
+```
+
 ## Build
 
 ```bash

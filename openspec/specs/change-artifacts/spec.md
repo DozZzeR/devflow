@@ -5,6 +5,21 @@ Defines where and in which format a task's plan lives (an OpenSpec change folder
 
 ## Requirements
 
+### Requirement: Addressable plan revisions
+
+Devflow SHALL list numbered OpenSpec checkboxes as plan nodes. A node revision SHALL replace only the selected task and its indented details. A revised plan MAY assign every numbered verify finding in a round a fix, defer or dismiss decision. Only fixes SHALL be passed as required work for that round.
+
+#### Scenario: Revise one approved task
+
+- **WHEN** a human requests a revision of node 2.1 with the current revision number
+- **THEN** design sees the whole plan, only node 2.1 can be replaced, and the revised plan awaits approval
+
+#### Scenario: Defer a finding
+
+- **WHEN** an approved plan assigns a reason to every finding and defers one of them
+- **THEN** the next implement and verify prompts use those decisions for that round
+
+
 ### Requirement: Change folder location and format
 
 The plan of a medium or complex task SHALL live in `openspec/changes/<task-id>/` with `proposal.md`, `design.md`, `tasks.md` and spec deltas under `specs/<capability>/spec.md`, in the OpenSpec `spec-driven` format, whether or not OpenSpec is installed in the project. devflow MUST NOT write OpenSpec configuration or schemas.

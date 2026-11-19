@@ -79,7 +79,7 @@ writeFileSync(join(codex, ".codex-plugin", "plugin.json"), json({
   interface: { displayName: "devflow", shortDescription: "Role-separated dev workflow with gates" },
 }));
 // Read-only tools run without a prompt; tools that record decisions or start work keep Codex's confirmation.
-const readOnly = ["devflow_status", "devflow_next", "devflow_run_status", "devflow_job_status", "devflow_log", "devflow_roles"];
+const readOnly = ["devflow_status", "devflow_nodes", "devflow_next", "devflow_run_status", "devflow_job_status", "devflow_log", "devflow_roles"];
 writeFileSync(join(codex, ".mcp.json"), json({
   mcpServers: {
     devflow: {

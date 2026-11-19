@@ -11,6 +11,9 @@
         "devflow_status": {
           "approval_mode": "approve"
         },
+        "devflow_nodes": {
+          "approval_mode": "approve"
+        },
         "devflow_next": {
           "approval_mode": "approve"
         },

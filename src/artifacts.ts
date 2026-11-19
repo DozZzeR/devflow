@@ -5,6 +5,8 @@ import { DevflowError } from "./errors.js";
 import { buildChildEnv, launch, resolveCommand } from "./proc.js";
 import { changeFileHashes, changeFiles, changeFolder } from "./snapshot.js";
 import { parseImpactZone } from "./zone.js";
+import { loadTask, taskDir } from "./store.js";
+import { decidedFeedback, reviewDecisions } from "./plan-nodes.js";
 import { section } from "./prompts.js";
 
 export const REQUIRED_PLAN_FILES = ["proposal.md", "design.md", "tasks.md"];
@@ -52,6 +54,20 @@ export async function checkDesign(root: string, id: string, config: Config, befo
   const dir = changeFolder(root, id);
   const missing = REQUIRED_PLAN_FILES.filter((f) => !existsSync(join(dir, f)));
   if (missing.length) return { ok: false, reason: "missing_plan_files", details: { missing } };
+
+  try {
+    const rounds = reviewDecisions(readFileSync(join(dir, "tasks.md"), "utf8"));
+    if (rounds.size) {
+      const reviews = loadTask(root, id).history.filter(h => h.kind === "complete" && h.stage === "verify");
+      for (const [round, rows] of rounds) {
+        if (reviews[round - 1]?.outcome !== "rework") throw new Error("No REWORK at review round " + round);
+        const name = round === reviews.length ? "verdict.md" : "verdict-round" + round + ".md";
+        decidedFeedback(rows, readFileSync(join(taskDir(root, id), name), "utf8"));
+      }
+    }
+  } catch (e) {
+    return { ok: false, reason: "invalid_plan_nodes", details: { message: (e as Error).message } };
+  }
 
   if (before) {
     const after = changeFileHashes(root, id);

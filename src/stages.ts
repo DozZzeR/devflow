@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.js";
 import { DEVFLOW_DIR } from "./config.js";
@@ -10,7 +11,8 @@ import { nextStage, roleFor, transition, type Event, type NextInfo, type Stage, 
 import { block, composePrompt, loadTemplate, section, type PromptStage } from "./prompts.js";
 import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
-import { loadTask, saveTask } from "./store.js";
+import { decidedFeedback, planNodes, replaceNode, reviewDecisions } from "./plan-nodes.js";
+import { loadTask, saveTask, writeFileAtomic } from "./store.js";
 import { parseBlocked, parsePlanConflict, runDelegatedReview } from "./review.js";
 import { verificationContext } from "./verify-context.js";
 
@@ -93,10 +95,10 @@ function verdictFromAnswer(log: string): string | undefined {
 }
 
 /** The newest saved verdict-round<N>.md with N <= upTo. */
-function lastSavedVerdict(dir: string, upTo: number): string | undefined {
+function lastSavedVerdict(dir: string, upTo: number): { round: number; text: string } | undefined {
   for (let n = upTo; n >= 1; n--) {
     const p = join(dir, `verdict-round${n}.md`);
-    if (existsSync(p)) return read(p);
+    if (existsSync(p)) return { round: n, text: read(p) };
   }
   return undefined;
 }
@@ -173,14 +175,27 @@ function saveGenerateFailure(
 }
 
 /** Feedback from the previous generate, gate, or verify run. */
-function reworkFeedback(root: string, task: TaskState): string {
-  const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
+function reworkFeedback(root: string, task: TaskState, designing = false): string {
+  const reviews = task.history.filter(h => h.kind === "complete" && h.stage === "verify");
+  const lastVerify = reviews.at(-1);
   const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
   const dir = runsDir(root, task.id);
-  const verdict = lastVerify?.outcome === "rework" ? read(join(dir, "verdict.md")) : "";
+  const approvedSince = lastVerify && task.history.slice(task.history.indexOf(lastVerify) + 1).some(h => h.kind === "approve");
+  const raw = lastVerify?.outcome === "rework" ? read(join(dir, "verdict.md")) : "";
+  const decisions = !designing && raw && reviewDecisions(read(join(changeFolder(root, task.id), "tasks.md"))).get(reviews.length);
+  let heading = "Verify verdict on the previous attempt (fix every high and medium finding)";
+  let verdict = raw;
+  if (decisions) {
+    heading = "Approved review decisions (implement fix rows only)";
+    verdict = decidedFeedback(decisions, raw);
+  } else if (designing) {
+    heading = "Prior review round " + reviews.length + " (the latest revision request determines scope)";
+  } else if (approvedSince) {
+    heading = "Untriaged review from the previous plan (the approved plan defines scope)";
+  }
   const gates = lastGates && lastGates.outcome !== "pass" ? read(join(dir, GATES_FAILURE)) : "";
   return (
-    block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) +
+    block(heading, verdict) +
     block("Gate failure on the previous attempt (make the gates pass)", gates) +
     block("Generate step failure on the previous attempt (make the generate command succeed)", read(join(dir, GENERATE_FAILURE)))
   );
@@ -225,9 +240,9 @@ async function runModelRaw(
   context: string,
   write: string[],
   expect: string[],
-  extra: { bash?: string[]; cwd?: string; round?: number; previousVerdict?: string } = {},
+  extra: { nodePrompt?: string; bash?: string[]; cwd?: string; round?: number; previousVerdict?: string } = {},
 ): Promise<RunResult> {
-  const prompt = composePrompt(loadTemplate(root, stage), {
+  const prompt = extra.nodePrompt ?? composePrompt(loadTemplate(root, stage), {
     id: task.id,
     description: task.description,
     ...(task.tracker ? { tracker: task.tracker } : {}),
@@ -257,6 +272,37 @@ async function runModelRaw(
     savePrompt: true,
     ...(extra.cwd ? { cwd: extra.cwd } : {}),
   });
+}
+
+/** Generate the candidate separately. Only devflow splices it into the original OpenSpec plan. */
+async function reviseNode(root: string, task: TaskState, config: Config, io: StageIo, node: string, context: string): Promise<RunResult> {
+  const path = join(changeFolder(root, task.id), "tasks.md");
+  const original = readFileSync(path, "utf8");
+  const digest = planDigest(root, task.id);
+  const copy = mkdtempSync(join(tmpdir(), "devflow-node-"));
+  try {
+    const prompt = [
+      "You are the DESIGN role. Revise one existing OpenSpec task in light of the complete plan.",
+      "Task id: " + task.id, "Task: " + task.description, "Language: " + config.language,
+      "Write the replacement node to node.md. Return one unchecked Markdown task with ID " + node +
+        " and its indented details. Keep requirements, other nodes and the impact zone intact.",
+      context,
+    ].join("\n\n");
+    const result = await runModel(root, task, config, io, "design", "design", "", ["node.md"], ["node.md"], { cwd: copy, nodePrompt: prompt });
+    if (!result.ok) return result;
+    if (loadTask(root, task.id).updatedAt !== task.updatedAt || planDigest(root, task.id) !== digest || readFileSync(path, "utf8") !== original) {
+      throw new DevflowError("plan_moved", "The plan changed while revising node " + node);
+    }
+    try {
+      writeFileAtomic(path, replaceNode(original, node, readFileSync(join(copy, "node.md"), "utf8")));
+    } catch (error) {
+      if (!(error instanceof DevflowError)) throw error;
+      return { ...result, ok: false, error: error.reason };
+    }
+    return result;
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
 }
 
 /** Run the task's next stage once and record its outcome. Returns undefined when nothing is runnable. */
@@ -299,18 +345,22 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
     case "design": {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
-      const rejections = task.history.filter((h) => h.kind === "reject").map((h) => `- ${h.reason ?? ""}`).join("\n");
+      const latest = task.history.findLast(h => h.kind === "reject" || h.kind === "tier" || h.kind === "escalate");
+      const request = latest?.kind === "reject" ? latest : undefined;
+      const rejections = request?.reason ?? "";
       const ctx =
         block("Exploration notes", read(join(runsDir(root, id), "facts.md"))) +
         block("Living specs (read as needed)", livingSpecs(root)) +
-        block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) +
-        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
+        block("Latest revision request (binding scope)", rejections) +
+        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task, true) : "");
       // A first design must produce every file fresh. A revision after a rejection may keep files that
       // were fine, but must change the plan.
       const revision = rejections.length > 0;
       const filesBefore = revision ? planDigest(root, id) : "";
       const required = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
-      const r = await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
+      const r = request?.node
+        ? await reviseNode(root, task, config, io, request.node, ctx)
+        : await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
       if (!r.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
         return report("fail", task, "run_failed", r);
@@ -336,7 +386,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const outputs = trusted.build?.outputs ?? [];
       // Generated outputs are writable, but only through the generate command: run it whenever the tests need
       // fresh outputs. devflow runs it again after implement anyway.
-      const generatedPaths = outputs.map((glob) => `- ${glob} (generated: refresh with \`${generate}\` when tests need it, never edit by hand)`);
+      const generatedPaths = outputs.map((glob) => `- ${glob} (generated: default command \`${generate}\`; follow the approved plan within the allowed scope, never edit by hand)`);
       const impact = [...zone.map((glob) => `- ${glob}`), ...generatedPaths].join("\n");
       const ctx =
         (small ? "" : changeContext(root, id, () => true)) +
@@ -360,7 +410,9 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
           task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
           return report("fail", task, "plan_conflict", r);
         }
-        task = record(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config, io);
+        const target = /^\[(\d+(?:\.\d+)+)\/[\w.-]+\]/.exec(conflict)?.[1];
+        const node = target && planNodes(read(join(root, tasksMd))).has(target) ? target : undefined;
+        task = record(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}`, ...(node ? { node } : {}) }, config, io);
         return report("plan_conflict", task, conflict, r);
       }
       if (r.ok && generate) {
@@ -407,16 +459,23 @@ async function runVerify(
   const verdictPath = join(dir, "verdict.md");
   const round = task.history.filter((h) => h.kind === "complete" && h.stage === "verify").length + 1;
   let previous: string | undefined;
+  let previousRound = round - 1;
   if (existsSync(verdictPath)) {
     previous = read(verdictPath);
     renameSync(verdictPath, join(dir, `verdict-round${round - 1}.md`));
   } else {
     // The last round produced no verdict (it failed): narrow against the last verdict that exists,
     // or a later round would drop the known findings it is told to re-check.
-    previous = lastSavedVerdict(dir, round - 1);
+    const saved = lastSavedVerdict(dir, round - 1);
+    previous = saved?.text;
+    previousRound = saved?.round ?? 0;
   }
 
   const folder = changeFolder(root, id);
+  if (previous) {
+    const decisions = reviewDecisions(read(join(folder, "tasks.md"))).get(previousRound);
+    if (decisions) previous = decidedFeedback(decisions, previous);
+  }
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
   const changes = changeSet(root, task.base!);
   const ctx =

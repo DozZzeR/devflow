@@ -51,7 +51,8 @@ Required files:
 - proposal.md: "## Why", "## What Changes", "## Capabilities" (New / Modified), "## Impact".
 - specs/<capability>/spec.md for each capability: "## ADDED|MODIFIED|REMOVED Requirements", each "### Requirement: <name>" with SHALL/MUST text (under 500 characters) and at least one "#### Scenario:" with **WHEN** / **THEN** lines. New capabilities start with "## Purpose".
 - design.md: "## Context", "## Decisions", "## Impact zone" (a list, one glob per line, of every file the implementer may change, including tests), "## Test plan" (which tests prove each scenario).
-- tasks.md: numbered groups with "- [ ] X.Y" checkbox tasks, each saying how it is verified.
+- tasks.md: decompose the plan into independently verifiable nodes. Preserve existing node IDs across revisions. Each node names its acceptance scenario, dependencies where needed, and how to verify it. Use numbered groups with "- [ ] X.Y" checkbox tasks, each saying how it is verified.
+When revising a numbered REWORK after a scope decision, put one row per finding under "## Review decisions (round N)" in tasks.md. Use "- F1 | fix | 1.1 | concrete instruction" or "- F2 | defer | - | reason" or "- F3 | dismiss | - | reason". Derive N from the review context. Honor human scope decisions.
 Rewrite every spec delta you keep; delete deltas that no longer apply.
 
 {{context}}
@@ -62,7 +63,7 @@ Outputs: {{outputs}}
     COMMON_HEADER.replace("{{role}}", "IMPLEMENT") +
     `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
 Stay inside the impact zone. You may run the test command: {{testCommand}}
-Do not edit proposal.md, design.md or spec deltas. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
+Do not edit proposal.md, design.md or spec deltas. Use a stable [node-id/issue-slug] at the start of a conflict reason only when revising that checkbox is sufficient; shared contracts require a full plan revision. Reuse the key when the same issue recurs. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 If you cannot work at all for a reason outside the plan (a file or tool you need is not accessible), change nothing and make your final line the word BLOCKED, a colon, and what is missing. Instructions outside the project that you cannot read are not a reason to stop: continue without them and mention it.
 
 {{context}}

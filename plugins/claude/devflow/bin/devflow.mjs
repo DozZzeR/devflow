@@ -20920,18 +20920,21 @@ function transition(task, event, config2, now) {
       return t;
     }
     case "reject": {
-      if (task.status !== "DESIGNED") {
+      const reopen = task.status === "HUMAN" && task.humanReason === "plan_conflicts_limit" && !event.by && event.revision !== void 0;
+      if (task.status !== "DESIGNED" && !reopen) {
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
       }
       if (event.revision !== void 0 && event.revision !== (task.planRevision ?? 1)) {
         throw new DevflowError("plan_moved", `Revision ${event.revision} is not the current plan (revision ${task.planRevision ?? 1}).`);
       }
       t.status = "EXPLORED";
+      delete t.humanReason;
+      delete t.gatesSnapshot;
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
       t.attempts.implement = 0;
       t.attempts.verify = 0;
-      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...event.by ? { results: "by model" } : {} });
+      t.history.push({ at: now, kind: "reject", reason: event.reason, ...event.node ? { node: event.node } : {}, to: `revision ${t.planRevision}`, ...event.by ? { results: "by model" } : {} });
       return t;
     }
     case "blocked": {
@@ -20943,8 +20946,13 @@ function transition(task, event, config2, now) {
       if (task.status !== "PLAN_APPROVED" || task.tier === "small") {
         throw new DevflowError("no_approved_plan", `Task ${task.id} has no approved plan to send back (status: ${task.status}).`);
       }
-      const conflicts = task.history.filter((h) => h.kind === "reject" && h.results === "by implement").length;
-      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
+      const key2 = (reason) => {
+        const text2 = reason.replace(/^implementer:\s*/i, "").trim().toLowerCase();
+        return /^\[([\w./-]+)\]/.exec(text2)?.[1] ?? text2.replace(/\s+/g, " ");
+      };
+      const reset = task.history.findLastIndex((h) => h.kind === "reject" && !h.results || h.kind === "complete" && h.stage === "implement" && h.outcome === "ok");
+      const conflicts = task.history.slice(reset + 1).filter((h) => h.kind === "reject" && h.results === "by implement" && key2(h.reason ?? "") === key2(event.reason)).length;
+      t.history.push({ at: now, kind: "reject", reason: event.reason, ...event.node ? { node: event.node } : {}, to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
       if (conflicts >= PLAN_CONFLICT_LIMIT - 1) {
         toHuman("plan_conflicts_limit");
         return t;
@@ -21055,7 +21063,8 @@ var init_lifecycle = __esm({
       outcome: external_exports.string().optional(),
       from: external_exports.string().optional(),
       to: external_exports.string().optional(),
-      reason: external_exports.string().optional()
+      reason: external_exports.string().optional(),
+      node: external_exports.string().optional()
     });
     PLAN_CONFLICT_LIMIT = 2;
     COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
@@ -34956,8 +34965,8 @@ var require_multipleOf = __commonJS({
         const { gen, data, schemaCode, it } = cxt;
         const prec = it.opts.multipleOfPrecision;
         const res = gen.let("res");
-        const invalid = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
-        cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid}))`);
+        const invalid2 = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
+        cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid2}))`);
       }
     };
     exports.default = def;
@@ -38963,6 +38972,11 @@ async function serveMcp(ctx) {
     return cli(resolveProject(ctx, projectDir), argv);
   }));
   server.registerTool(
+    "devflow_nodes",
+    { description: "List the numbered OpenSpec tasks in the current plan.", inputSchema: { ...project2, id: external_exports.string() } },
+    guard(async ({ projectDir, id }) => cli(resolveProject(ctx, projectDir), ["nodes", id]))
+  );
+  server.registerTool(
     "devflow_next",
     { description: "Next stage of a task (read-only).", inputSchema: { ...project2, id: external_exports.string() } },
     guard(async ({ projectDir, id }) => cli(resolveProject(ctx, projectDir), ["next", id]))
@@ -38973,8 +38987,8 @@ async function serveMcp(ctx) {
   }, guard(async ({ projectDir, id, revision }) => cli(resolveProject(ctx, projectDir), ["approve", id, "--revision", String(revision)])));
   server.registerTool("devflow_reject", {
     description: `Send the plan back to design with the user's feedback. ${HUMAN_ONLY}`,
-    inputSchema: { ...project2, id: external_exports.string(), revision: external_exports.number().int().positive(), feedback: external_exports.string() }
-  }, guard(async ({ projectDir, id, revision, feedback }) => cli(resolveProject(ctx, projectDir), ["approve", id, "--revision", String(revision), "--reject", feedback])));
+    inputSchema: { ...project2, id: external_exports.string(), revision: external_exports.number().int().positive(), node: external_exports.string().optional(), feedback: external_exports.string() }
+  }, guard(async ({ projectDir, id, revision, feedback, node: node2 }) => cli(resolveProject(ctx, projectDir), ["approve", id, "--revision", String(revision), "--reject", feedback, ...node2 ? ["--node", node2] : []])));
   server.registerTool("devflow_delegate_approval", {
     description: `Let a reviewer model approve or reject this task's plans (to: model), or give approval back to the user (to: human). ${HUMAN_ONLY}`,
     inputSchema: { ...project2, id: external_exports.string(), to: external_exports.enum(["model", "human"]) }
@@ -39065,7 +39079,7 @@ var init_mcp2 = __esm({
 
 // src/cli.ts
 init_config();
-import { readFileSync as readFileSync16 } from "node:fs";
+import { existsSync as existsSync14, readFileSync as readFileSync16 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { dirname as dirname8, join as join18 } from "node:path";
 
@@ -40129,6 +40143,83 @@ function changeFileHashes(root, id) {
   return new Map(changeFiles(root, id).map((f) => [f, sha(readFileSync9(join11(dir, f)))]));
 }
 
+// src/artifacts.ts
+init_store();
+
+// src/plan-nodes.ts
+init_errors3();
+var checkbox = /^([ \t]*[-*+] \[([ xX])\] (\d+(?:\.\d+)+)\s+\S.*)$/;
+var invalid = (message) => new DevflowError("invalid_plan_nodes", message);
+function prose(markdown) {
+  let fence = "";
+  return markdown.replace(/^[^\r\n]+/gm, (line) => {
+    const mark = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (!fence && !mark) return line;
+    if (!fence) fence = mark;
+    else if (mark && mark[0] === fence[0] && mark.length >= fence.length && line.trim() === mark) fence = "";
+    return " ".repeat(line.length);
+  });
+}
+function planNodes(markdown) {
+  const nodes = /* @__PURE__ */ new Map();
+  let current;
+  for (const line of prose(markdown).matchAll(/^([^\r\n]+)(?=\r?$)/gm)) {
+    const body = line[1];
+    const match = checkbox.exec(body);
+    if (match) {
+      const id = match[3];
+      if (nodes.has(id)) throw invalid("Duplicate task ID " + id);
+      current = { start: line.index, end: line.index + body.length, done: match[2] !== " " };
+      nodes.set(id, current);
+    } else if (current && /^[ \t]+\S/.test(body)) {
+      current.end = line.index + body.length;
+    } else {
+      current = void 0;
+    }
+  }
+  return nodes;
+}
+function replaceNode(markdown, id, replacement) {
+  const target = planNodes(markdown).get(id);
+  const candidate = replacement.trimEnd().replace(/\r\n/g, "\n");
+  const parsed = planNodes(candidate);
+  const node2 = parsed.get(id);
+  if (!target || parsed.size !== 1 || !node2 || node2.done || node2.start !== 0 || node2.end !== candidate.length || candidate.split("\n").slice(1).some((line) => line.trim() && !/^[ \t]+/.test(line))) {
+    throw invalid("Expected one unchecked task with ID " + id + " and only its indented detail lines.");
+  }
+  const text2 = markdown.includes("\r\n") ? candidate.replace(/\n/g, "\r\n") : candidate;
+  return markdown.slice(0, target.start) + text2 + markdown.slice(target.end);
+}
+function reviewDecisions(tasks) {
+  const rounds = /* @__PURE__ */ new Map();
+  const nodes = planNodes(tasks);
+  let decisions;
+  for (const line of prose(tasks).split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(line)) {
+      decisions = void 0;
+      if (!/^## Review decisions\b/i.test(line)) continue;
+      const heading = /^## Review decisions \(round ([1-9]\d*)\)\s*$/.exec(line);
+      if (!heading || rounds.has(Number(heading[1]))) throw invalid("Invalid or duplicate review decisions heading.");
+      decisions = [];
+      rounds.set(Number(heading[1]), decisions);
+    } else if (decisions && line.trim()) {
+      const row = /^- (F[1-9]\d*) \| (fix|defer|dismiss) \| ([\d.]+|-) \| (\S.*)$/.exec(line);
+      if (!row || decisions.some((d) => d.finding === row[1])) throw invalid("Invalid or duplicate finding: " + line);
+      const [, finding, action, node2, reason] = row;
+      if (action === "fix" ? !nodes.has(node2) : node2 !== "-") throw invalid("Invalid node for " + finding);
+      decisions.push({ finding, action, node: node2, reason });
+    }
+  }
+  return rounds;
+}
+function decidedFeedback(rows, verdict) {
+  const ids = [...prose(verdict).matchAll(/^(\d+)[.)]\s+\S/gm)].map((m) => "F" + m[1]);
+  if (!ids.length || ids.length !== rows.length || rows.some((r) => !ids.includes(r.finding))) {
+    throw invalid("Decide each numbered finding of this verify round exactly once.");
+  }
+  return rows.map((r) => r.finding + " | " + r.action + " | " + r.node + " | " + r.reason).join("\n");
+}
+
 // src/prompts.ts
 init_config();
 init_errors3();
@@ -40160,7 +40251,8 @@ Required files:
 - proposal.md: "## Why", "## What Changes", "## Capabilities" (New / Modified), "## Impact".
 - specs/<capability>/spec.md for each capability: "## ADDED|MODIFIED|REMOVED Requirements", each "### Requirement: <name>" with SHALL/MUST text (under 500 characters) and at least one "#### Scenario:" with **WHEN** / **THEN** lines. New capabilities start with "## Purpose".
 - design.md: "## Context", "## Decisions", "## Impact zone" (a list, one glob per line, of every file the implementer may change, including tests), "## Test plan" (which tests prove each scenario).
-- tasks.md: numbered groups with "- [ ] X.Y" checkbox tasks, each saying how it is verified.
+- tasks.md: decompose the plan into independently verifiable nodes. Preserve existing node IDs across revisions. Each node names its acceptance scenario, dependencies where needed, and how to verify it. Use numbered groups with "- [ ] X.Y" checkbox tasks, each saying how it is verified.
+When revising a numbered REWORK after a scope decision, put one row per finding under "## Review decisions (round N)" in tasks.md. Use "- F1 | fix | 1.1 | concrete instruction" or "- F2 | defer | - | reason" or "- F3 | dismiss | - | reason". Derive N from the review context. Honor human scope decisions.
 Rewrite every spec delta you keep; delete deltas that no longer apply.
 
 {{context}}
@@ -40169,7 +40261,7 @@ Outputs: {{outputs}}
 `,
   implement: COMMON_HEADER.replace("{{role}}", "IMPLEMENT") + `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
 Stay inside the impact zone. You may run the test command: {{testCommand}}
-Do not edit proposal.md, design.md or spec deltas. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
+Do not edit proposal.md, design.md or spec deltas. Use a stable [node-id/issue-slug] at the start of a conflict reason only when revising that checkbox is sufficient; shared contracts require a full plan revision. Reuse the key when the same issue recurs. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 If you cannot work at all for a reason outside the plan (a file or tool you need is not accessible), change nothing and make your final line the word BLOCKED, a colon, and what is missing. Instructions outside the project that you cannot read are not a reason to stop: continue without them and mention it.
 
 {{context}}
@@ -40273,6 +40365,19 @@ async function checkDesign(root, id, config2, before) {
   const dir = changeFolder(root, id);
   const missing = REQUIRED_PLAN_FILES.filter((f) => !existsSync10(join13(dir, f)));
   if (missing.length) return { ok: false, reason: "missing_plan_files", details: { missing } };
+  try {
+    const rounds = reviewDecisions(readFileSync11(join13(dir, "tasks.md"), "utf8"));
+    if (rounds.size) {
+      const reviews = loadTask(root, id).history.filter((h) => h.kind === "complete" && h.stage === "verify");
+      for (const [round, rows] of rounds) {
+        if (reviews[round - 1]?.outcome !== "rework") throw new Error("No REWORK at review round " + round);
+        const name = round === reviews.length ? "verdict.md" : "verdict-round" + round + ".md";
+        decidedFeedback(rows, readFileSync11(join13(taskDir(root, id), name), "utf8"));
+      }
+    }
+  } catch (e) {
+    return { ok: false, reason: "invalid_plan_nodes", details: { message: e.message } };
+  }
   if (before) {
     const after = changeFileHashes(root, id);
     const stale = changeFiles(root, id).filter((f) => f.startsWith("specs/") && before.get(f) === after.get(f));
@@ -40308,7 +40413,8 @@ init_background();
 // src/stages.ts
 init_config();
 init_errors3();
-import { copyFileSync as copyFileSync2, existsSync as existsSync13, lstatSync as lstatSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync13, lstatSync as lstatSync6, mkdirSync as mkdirSync6, mkdtempSync as mkdtempSync3, readFileSync as readFileSync14, renameSync as renameSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { tmpdir as tmpdir3 } from "node:os";
 import { dirname as dirname6, join as join16 } from "node:path";
 init_lifecycle();
 init_store();
@@ -40577,7 +40683,7 @@ function verdictFromAnswer(log) {
 function lastSavedVerdict(dir, upTo) {
   for (let n = upTo; n >= 1; n--) {
     const p = join16(dir, `verdict-round${n}.md`);
-    if (existsSync13(p)) return read(p);
+    if (existsSync13(p)) return { round: n, text: read(p) };
   }
   return void 0;
 }
@@ -40642,13 +40748,26 @@ function saveGenerateFailure(root, id, command, exitCode, timedOut, log) {
     ""
   ].join("\n"));
 }
-function reworkFeedback(root, task) {
-  const lastVerify = [...task.history].reverse().find((h) => h.kind === "complete" && h.stage === "verify");
+function reworkFeedback(root, task, designing = false) {
+  const reviews = task.history.filter((h) => h.kind === "complete" && h.stage === "verify");
+  const lastVerify = reviews.at(-1);
   const lastGates = [...task.history].reverse().find((h) => h.kind === "gates");
   const dir = runsDir2(root, task.id);
-  const verdict = lastVerify?.outcome === "rework" ? read(join16(dir, "verdict.md")) : "";
+  const approvedSince = lastVerify && task.history.slice(task.history.indexOf(lastVerify) + 1).some((h) => h.kind === "approve");
+  const raw = lastVerify?.outcome === "rework" ? read(join16(dir, "verdict.md")) : "";
+  const decisions = !designing && raw && reviewDecisions(read(join16(changeFolder(root, task.id), "tasks.md"))).get(reviews.length);
+  let heading = "Verify verdict on the previous attempt (fix every high and medium finding)";
+  let verdict = raw;
+  if (decisions) {
+    heading = "Approved review decisions (implement fix rows only)";
+    verdict = decidedFeedback(decisions, raw);
+  } else if (designing) {
+    heading = "Prior review round " + reviews.length + " (the latest revision request determines scope)";
+  } else if (approvedSince) {
+    heading = "Untriaged review from the previous plan (the approved plan defines scope)";
+  }
   const gates = lastGates && lastGates.outcome !== "pass" ? read(join16(dir, GATES_FAILURE)) : "";
-  return block("Verify verdict on the previous attempt (fix every high and medium finding)", verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates) + block("Generate step failure on the previous attempt (make the generate command succeed)", read(join16(dir, GENERATE_FAILURE)));
+  return block(heading, verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates) + block("Generate step failure on the previous attempt (make the generate command succeed)", read(join16(dir, GENERATE_FAILURE)));
 }
 function role(stage, task, config2) {
   const r = roleFor(stage, task.tier, config2);
@@ -40678,7 +40797,7 @@ async function runModel(...a) {
   }
 }
 async function runModelRaw(root, task, config2, io, stage, roleStage, context, write, expect, extra = {}) {
-  const prompt = composePrompt(loadTemplate(root, stage), {
+  const prompt = extra.nodePrompt ?? composePrompt(loadTemplate(root, stage), {
     id: task.id,
     description: task.description,
     ...task.tracker ? { tracker: task.tracker } : {},
@@ -40712,6 +40831,36 @@ ${extra.previousVerdict ?? ""}
     savePrompt: true,
     ...extra.cwd ? { cwd: extra.cwd } : {}
   });
+}
+async function reviseNode(root, task, config2, io, node2, context) {
+  const path = join16(changeFolder(root, task.id), "tasks.md");
+  const original = readFileSync14(path, "utf8");
+  const digest = planDigest(root, task.id);
+  const copy = mkdtempSync3(join16(tmpdir3(), "devflow-node-"));
+  try {
+    const prompt = [
+      "You are the DESIGN role. Revise one existing OpenSpec task in light of the complete plan.",
+      "Task id: " + task.id,
+      "Task: " + task.description,
+      "Language: " + config2.language,
+      "Write the replacement node to node.md. Return one unchecked Markdown task with ID " + node2 + " and its indented details. Keep requirements, other nodes and the impact zone intact.",
+      context
+    ].join("\n\n");
+    const result = await runModel(root, task, config2, io, "design", "design", "", ["node.md"], ["node.md"], { cwd: copy, nodePrompt: prompt });
+    if (!result.ok) return result;
+    if (loadTask(root, task.id).updatedAt !== task.updatedAt || planDigest(root, task.id) !== digest || readFileSync14(path, "utf8") !== original) {
+      throw new DevflowError("plan_moved", "The plan changed while revising node " + node2);
+    }
+    try {
+      writeFileAtomic(path, replaceNode(original, node2, readFileSync14(join16(copy, "node.md"), "utf8")));
+    } catch (error62) {
+      if (!(error62 instanceof DevflowError)) throw error62;
+      return { ...result, ok: false, error: error62.reason };
+    }
+    return result;
+  } finally {
+    rmSync6(copy, { recursive: true, force: true });
+  }
 }
 async function runNextStage(root, workingConfig, id, io) {
   let task = loadTask(root, id);
@@ -40748,12 +40897,14 @@ async function runNextStage(root, workingConfig, id, io) {
     case "design": {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
-      const rejections = task.history.filter((h) => h.kind === "reject").map((h) => `- ${h.reason ?? ""}`).join("\n");
-      const ctx = block("Exploration notes", read(join16(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Reviewer feedback on earlier versions of this plan (address every point)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task) : "");
+      const latest = task.history.findLast((h) => h.kind === "reject" || h.kind === "tier" || h.kind === "escalate");
+      const request = latest?.kind === "reject" ? latest : void 0;
+      const rejections = request?.reason ?? "";
+      const ctx = block("Exploration notes", read(join16(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Latest revision request (binding scope)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task, true) : "");
       const revision = rejections.length > 0;
       const filesBefore = revision ? planDigest(root, id) : "";
       const required2 = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
-      const r = await runModel(root, task, config2, io, "design", "design", ctx, [`${folder}/**`], required2);
+      const r = request?.node ? await reviseNode(root, task, config2, io, request.node, ctx) : await runModel(root, task, config2, io, "design", "design", ctx, [`${folder}/**`], required2);
       if (!r.ok) {
         task = record2(root, task, { kind: "complete", stage, outcome: "fail" }, config2, io);
         return report("fail", task, "run_failed", r);
@@ -40776,7 +40927,7 @@ async function runNextStage(root, workingConfig, id, io) {
       const trusted = gateConfig(root, task.base, config2).config;
       const generate = trusted.build?.generate;
       const outputs = trusted.build?.outputs ?? [];
-      const generatedPaths = outputs.map((glob) => `- ${glob} (generated: refresh with \`${generate}\` when tests need it, never edit by hand)`);
+      const generatedPaths = outputs.map((glob) => `- ${glob} (generated: default command \`${generate}\`; follow the approved plan within the allowed scope, never edit by hand)`);
       const impact = [...zone.map((glob) => `- ${glob}`), ...generatedPaths].join("\n");
       const ctx = (small ? "" : changeContext(root, id, () => true)) + (!small || generatedPaths.length ? block("Impact zone", impact) : "") + reworkFeedback(root, task);
       const generateFailure = join16(runsDir2(root, id), GENERATE_FAILURE);
@@ -40797,7 +40948,9 @@ async function runNextStage(root, workingConfig, id, io) {
           task = record2(root, task, { kind: "complete", stage, outcome: "fail" }, config2, io);
           return report("fail", task, "plan_conflict", r);
         }
-        task = record2(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}` }, config2, io);
+        const target = /^\[(\d+(?:\.\d+)+)\/[\w.-]+\]/.exec(conflict)?.[1];
+        const node2 = target && planNodes(read(join16(root, tasksMd))).has(target) ? target : void 0;
+        task = record2(root, task, { kind: "plan_conflict", reason: `implementer: ${conflict}`, ...node2 ? { node: node2 } : {} }, config2, io);
         return report("plan_conflict", task, conflict, r);
       }
       if (r.ok && generate) {
@@ -40834,13 +40987,20 @@ async function runVerify(root, task, workingConfig, io, report) {
   const verdictPath = join16(dir, "verdict.md");
   const round = task.history.filter((h) => h.kind === "complete" && h.stage === "verify").length + 1;
   let previous;
+  let previousRound = round - 1;
   if (existsSync13(verdictPath)) {
     previous = read(verdictPath);
     renameSync2(verdictPath, join16(dir, `verdict-round${round - 1}.md`));
   } else {
-    previous = lastSavedVerdict(dir, round - 1);
+    const saved = lastSavedVerdict(dir, round - 1);
+    previous = saved?.text;
+    previousRound = saved?.round ?? 0;
   }
   const folder = changeFolder(root, id);
+  if (previous) {
+    const decisions = reviewDecisions(read(join16(folder, "tasks.md"))).get(previousRound);
+    if (decisions) previous = decidedFeedback(decisions, previous);
+  }
   const deltas = changeContext(root, id, (f) => f.startsWith("specs/"));
   const changes = changeSet(root, task.base);
   const ctx = block("Threat model and verification context", verificationContext(root, task.base, changes)) + deltas + block(`openspec/changes/${id}/tasks.md`, read(join16(folder, "tasks.md"))) + block("Test plan (from the design)", section(read(join16(folder, "design.md")), "Test plan")) + block("Changed files", changes.map((p) => `- ${p}`).join("\n")) + block("Gate results", gatesSummary(task));
@@ -41021,9 +41181,10 @@ var USAGE = `devflow \u2014 role-separated dev workflow
 Usage:
   devflow init [--dir <path>] [--runners mixed|claude|codex]
   devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>] [--zone <glob>]...
+  devflow nodes <id> [--json]
   devflow next <id>
   devflow complete <id> <stage> <outcome> [--override "<reason>"]   (gates ok needs --override)
-  devflow approve <id> [--resume | --reject "<what to change>"]
+  devflow approve <id> [--resume | --reject "<what to change>" [--node <task-id>] [--revision <n>]]
   devflow tier <id> <small|medium|complex>
   devflow escalate <id> --reason "<why>"
   devflow status [<id>] [--json]
@@ -41040,7 +41201,7 @@ Usage:
   devflow log <id> [--follow]
 
 Global: --json (machine-readable errors), --help, --version`;
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "revision", "to", "command"]);
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "node", "revision", "to", "command"]);
 var LIST_FLAGS = /* @__PURE__ */ new Set(["write", "expect", "allow-bash", "zone"]);
 var BOOL_FLAGS = /* @__PURE__ */ new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow", "apply"]);
 function parseArgs(argv) {
@@ -41172,6 +41333,16 @@ async function run(argv, io) {
         io.out(json2 ? JSON.stringify(summary(task, config2)) : `Started ${id} (${tier}). Next: ${nextStage(task, config2).stage}`);
         return 0;
       }
+      case "nodes": {
+        arity(args, 1, 1, "nodes <id>");
+        const { root } = project(io);
+        const task = loadTask(root, args[0]);
+        const path = join18(changeFolder(root, task.id), "tasks.md");
+        const markdown = existsSync14(path) ? readFileSync16(path, "utf8") : "";
+        const nodes = [...planNodes(markdown)].map(([id, n]) => ({ id, done: n.done, text: markdown.slice(n.start, n.end) }));
+        io.out(JSON.stringify({ id: task.id, revision: task.planRevision ?? 1, nodes }));
+        return 0;
+      }
       case "next": {
         arity(args, 1, 1, "next <id>");
         const { root, config: config2 } = project(io);
@@ -41196,8 +41367,16 @@ async function run(argv, io) {
         const revisionArg = str(p, "revision");
         const revision = revisionArg === void 0 ? void 0 : Number(revisionArg);
         if (revision !== void 0 && (!Number.isInteger(revision) || revision < 1)) throw new UsageError("--revision must be a positive integer");
+        const node2 = str(p, "node");
+        if (node2) {
+          if (!rejectReason || p.flags.has("resume") || revision === void 0) throw new UsageError("--node requires --reject and --revision");
+          const { root } = project(io);
+          validateId(args[0]);
+          const path = join18(changeFolder(root, args[0]), "tasks.md");
+          if (!planNodes(readFileSync16(path, "utf8")).has(node2)) throw new DevflowError("unknown_plan_node", "Unknown plan node " + node2);
+        }
         const rev = revision === void 0 ? {} : { revision };
-        let event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason, ...rev } : { kind: "approve", ...rev };
+        let event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason, ...node2 ? { node: node2 } : {}, ...rev } : { kind: "approve", ...rev };
         if (!p.flags.has("resume") && !rejectReason) {
           const { root, config: config3 } = project(io);
           const id = args[0];

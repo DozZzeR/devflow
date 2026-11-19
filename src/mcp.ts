@@ -95,6 +95,9 @@ export async function serveMcp(ctx: McpContext): Promise<void> {
     return cli(resolveProject(ctx, projectDir), argv);
   }));
 
+  server.registerTool("devflow_nodes", { description: "List the numbered OpenSpec tasks in the current plan.", inputSchema: { ...project, id: z.string() } },
+    guard(async ({ projectDir, id }) => cli(resolveProject(ctx, projectDir), ["nodes", id])));
+
   server.registerTool("devflow_next", { description: "Next stage of a task (read-only).", inputSchema: { ...project, id: z.string() } },
     guard(async ({ projectDir, id }) => cli(resolveProject(ctx, projectDir), ["next", id])));
 
@@ -105,8 +108,8 @@ export async function serveMcp(ctx: McpContext): Promise<void> {
 
   server.registerTool("devflow_reject", {
     description: `Send the plan back to design with the user's feedback. ${HUMAN_ONLY}`,
-    inputSchema: { ...project, id: z.string(), revision: z.number().int().positive(), feedback: z.string() },
-  }, guard(async ({ projectDir, id, revision, feedback }) => cli(resolveProject(ctx, projectDir), ["approve", id, "--revision", String(revision), "--reject", feedback])));
+    inputSchema: { ...project, id: z.string(), revision: z.number().int().positive(), node: z.string().optional(), feedback: z.string() },
+  }, guard(async ({ projectDir, id, revision, feedback, node }) => cli(resolveProject(ctx, projectDir), ["approve", id, "--revision", String(revision), "--reject", feedback, ...(node ? ["--node", node] : [])])));
 
   server.registerTool("devflow_delegate_approval", {
     description: `Let a reviewer model approve or reject this task's plans (to: model), or give approval back to the user (to: human). ${HUMAN_ONLY}`,

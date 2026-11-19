@@ -38,6 +38,7 @@ const HistoryEntrySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   reason: z.string().optional(),
+  node: z.string().optional(),
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
@@ -85,8 +86,8 @@ export type Event =
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
   | { kind: "approve"; planDigest?: string; zone?: string[]; revision?: number; by?: "model" }
   | { kind: "invalidate"; to: "approval" | "gates"; reason: string }
-  | { kind: "reject"; reason: string; revision?: number; by?: "model" }
-  | { kind: "plan_conflict"; reason: string }
+  | { kind: "reject"; reason: string; node?: string; revision?: number; by?: "model" }
+  | { kind: "plan_conflict"; reason: string; node?: string }
   | { kind: "blocked"; stage: Stage; reason: string }
   | { kind: "delegate"; to: "human" | "model" }
   | { kind: "resume" }
@@ -345,19 +346,22 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     }
 
     case "reject": {
-      if (task.status !== "DESIGNED") {
+      const reopen = task.status === "HUMAN" && task.humanReason === "plan_conflicts_limit" && !event.by && event.revision !== undefined;
+      if (task.status !== "DESIGNED" && !reopen) {
         throw new DevflowError("not_awaiting_approval", `Task ${task.id} is not awaiting plan approval (status: ${task.status}).`);
       }
       if (event.revision !== undefined && event.revision !== (task.planRevision ?? 1)) {
         throw new DevflowError("plan_moved", `Revision ${event.revision} is not the current plan (revision ${task.planRevision ?? 1}).`);
       }
       t.status = "EXPLORED";
+      delete t.humanReason;
+      delete t.gatesSnapshot;
       delete t.planDigest;
       t.planRevision = (t.planRevision ?? 1) + 1;
       // A new plan starts with fresh implement and verify attempts.
       t.attempts.implement = 0;
       t.attempts.verify = 0;
-      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${t.planRevision}`, ...(event.by ? { results: "by model" } : {}) });
+      t.history.push({ at: now, kind: "reject", reason: event.reason, ...(event.node ? { node: event.node } : {}), to: `revision ${t.planRevision}`, ...(event.by ? { results: "by model" } : {}) });
       return t;
     }
 
@@ -375,8 +379,15 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
       if (task.status !== "PLAN_APPROVED" || task.tier === "small") {
         throw new DevflowError("no_approved_plan", `Task ${task.id} has no approved plan to send back (status: ${task.status}).`);
       }
-      const conflicts = task.history.filter((h) => h.kind === "reject" && h.results === "by implement").length;
-      t.history.push({ at: now, kind: "reject", reason: event.reason, to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
+      const key = (reason: string) => {
+        const text = reason.replace(/^implementer:\s*/i, "").trim().toLowerCase();
+        return /^\[([\w./-]+)\]/.exec(text)?.[1] ?? text.replace(/\s+/g, " ");
+      };
+      const reset = task.history.findLastIndex(h => (h.kind === "reject" && !h.results) ||
+        (h.kind === "complete" && h.stage === "implement" && h.outcome === "ok"));
+      const conflicts = task.history.slice(reset + 1).filter(h => h.kind === "reject" &&
+        h.results === "by implement" && key(h.reason ?? "") === key(event.reason)).length;
+      t.history.push({ at: now, kind: "reject", reason: event.reason, ...(event.node ? { node: event.node } : {}), to: `revision ${(t.planRevision ?? 1) + 1}`, results: "by implement" });
       if (conflicts >= PLAN_CONFLICT_LIMIT - 1) {
         toHuman("plan_conflicts_limit");
         return t;

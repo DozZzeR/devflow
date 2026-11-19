@@ -156,7 +156,8 @@ test("generate runs once after the implementer in the project root using the bas
   assert.equal(readFileSync(join(root, "order.txt"), "utf8"), "implement\n" + "generate\n" + root + "\n");
   assert.equal(existsSync(join(root, "alternate.txt")), false);
   const prompt = readFileSync(join(root, ".devflow", "runs", "gen", "logs", "implement-1.prompt.txt"), "utf8");
-  assert.ok(prompt.includes("- plugins/** (generated: refresh with `node gen.cjs` when tests need it, never edit by hand)"));
+  assert.match(prompt, /plugins\/\*\*.*node gen\.cjs/);
+  assert.match(prompt, /default.*approved plan/i);
   // The implementer may refresh generated outputs itself, so they are in its write scope.
   assert.match(prompt, /Outputs: you may write [^\n]*plugins\/\*\*/);
   assert.doesNotMatch(prompt, /alternate\/\*\*/);
@@ -456,4 +457,107 @@ test("manual verify pass needs an override", () => {
   devflow("start", "t7", "x", "--tier", "small");
   const r = devflow("complete", "t7", "verify", "pass", "--json");
   assert.equal(JSON.parse(r.err).error.reason, "verify_needs_run");
+});
+
+
+test("node revision changes only the requested OpenSpec checkbox and preserves the plan context", () => {
+  const { root, devflow, prompts } = setup();
+  devflow("start", "nodes", "Add mul");
+  devflow("run", "nodes");
+  const folder = join(root, "openspec/changes/nodes");
+  const path = join(folder, "tasks.md");
+  const original = readFileSync(path, "utf8") + "\n- [x] 1.2 Keep this completed sibling.\n";
+  writeFileSync(path, original);
+  const spec = readFileSync(join(folder, "specs/math/spec.md"), "utf8");
+  assert.equal(devflow("approve", "nodes", "--revision", "1", "--node", "9.9", "--reject", "Change test").code, 1);
+  const reject = devflow("approve", "nodes", "--revision", "1", "--node", "1.1", "--reject", "Use a negative input");
+  assert.equal(reject.code, 0, reject.err);
+  const run = devflow("run", "nodes", "--once");
+  assert.equal(run.code, 0, run.out + run.err);
+  assert.equal(readFileSync(path, "utf8"), original.replace("Add mul and its test; verify with node check.js", "Check negative input with node check.js"));
+  assert.equal(readFileSync(join(folder, "specs/math/spec.md"), "utf8"), spec);
+  const design = readdirSync(prompts).filter(f => f.startsWith("DESIGN")).sort().at(-1)!;
+  assert.match(readFileSync(join(prompts, design), "utf8"), /Keep this completed sibling/);
+  assert.equal(devflow("approve", "nodes", "--revision", "2").code, 0);
+});
+
+test("different plan conflicts do not exhaust each other's budget and HUMAN accepts an explicit revision", () => {
+  const { devflow, devflowWith, state } = setup();
+  devflow("start", "conflicts", "Add mul");
+  devflow("run", "conflicts");
+  for (const reason of ["[1.1/scope] missing path", "[1.1/test] missing assertion", "[1.1/test] assertion still missing"]) {
+    assert.equal(devflow("approve", "conflicts").code, 0);
+    devflowWith({ FAKE_PLAN_CONFLICT: reason }, "run", "conflicts", "--once");
+    if (reason.includes("still")) break;
+    assert.equal(state("conflicts").status, "EXPLORED");
+    assert.equal(devflow("run", "conflicts", "--once").code, 0);
+  }
+  assert.equal(state("conflicts").humanReason, "plan_conflicts_limit");
+  assert.equal(devflow("approve", "conflicts", "--revision", "2", "--reject", "Change the plan").code, 1);
+  assert.equal(devflow("approve", "conflicts", "--revision", "3", "--reject", "Change the plan").code, 0);
+  assert.equal(state("conflicts").planRevision, 4);
+});
+
+test("approved finding decisions replace obsolete instructions while a new verify round remains actionable", () => {
+  const { root, devflow, devflowWith, prompts } = setup();
+  devflow("start", "decisions", "Add mul");
+  devflow("run", "decisions");
+  devflow("approve", "decisions");
+  devflowWith({ FAKE_VERDICT: "REWORK" }, "run", "decisions", "--once");
+  devflow("run", "decisions", "--once");
+  devflowWith({ FAKE_VERDICT: "REWORK" }, "run", "decisions", "--once");
+  const dir = join(root, ".devflow/runs/decisions");
+  const s = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+  assert.equal(s.lastVerdict.outcome, "rework");
+  writeFileSync(join(dir, "verdict.md"), "VERDICT: REWORK\n1. **High** fix the arithmetic\n2. **High** OBSOLETE-RAW-INSTRUCTION\n");
+  devflowWith({ FAKE_PLAN_CONFLICT: "plan is wrong" }, "run", "decisions", "--once");
+  devflow("run", "decisions", "--once");
+  const path = join(root, "openspec/changes/decisions/tasks.md");
+  const tasks = readFileSync(path, "utf8");
+  const decisions = "\n## Review decisions (round 1)\n\n- F1 | fix | 1.1 | Check negative inputs\n- F2 | defer | - | Outside this change\n";
+  writeFileSync(path, tasks + decisions.replace("1.1 | Check", "9.9 | Check"));
+  assert.equal(devflow("approve", "decisions").code, 1);
+  writeFileSync(path, tasks + decisions);
+  assert.equal(devflow("approve", "decisions").code, 0);
+  const impl = devflow("run", "decisions", "--once");
+  assert.equal(impl.code, 0, impl.err);
+  const prompt = implementPrompts(prompts).at(-1)!;
+  assert.match(prompt, /Check negative inputs/);
+  assert.doesNotMatch(prompt, /OBSOLETE-RAW-INSTRUCTION/);
+  devflow("run", "decisions", "--once");
+  devflowWith({ FAKE_VERDICT: "REWORK" }, "run", "decisions", "--once");
+  const verifyPrompt = readdirSync(prompts).filter(f => f.startsWith("VERIFY")).sort().at(-1)!;
+  assert.doesNotMatch(readFileSync(join(prompts, verifyPrompt), "utf8"), /OBSOLETE-RAW-INSTRUCTION/);
+});
+
+
+test("plan node pool is accessible and an implementer's targeted conflict replans only its node", () => {
+  const { root, devflow, devflowWith, state } = setup();
+  devflow("start", "pool", "Add mul");
+  devflow("run", "pool");
+  const file = join(root, "openspec/changes/pool/tasks.md");
+  const original = readFileSync(file, "utf8") + "\n- [x] 1.2 Keep sibling\n";
+  writeFileSync(file, original);
+  const pool = devflow("nodes", "pool", "--json");
+  assert.equal(pool.code, 0, pool.err);
+  assert.deepEqual(JSON.parse(pool.out).nodes.map((n: any) => [n.id, n.done]), [["1.1", false], ["1.2", true]]);
+  assert.equal(devflow("approve", "pool").code, 0);
+  devflowWith({ FAKE_PLAN_CONFLICT: "[1.1/test] use negative input" }, "run", "pool", "--once");
+  assert.equal(state("pool").history.at(-1).node, "1.1");
+  assert.equal(devflow("run", "pool", "--once").code, 0);
+  assert.equal(readFileSync(file, "utf8"), original.replace("Add mul and its test; verify with node check.js", "Check negative input with node check.js"));
+});
+
+
+test("a revised plan with no dispositions keeps the untriaged review visible", () => {
+  const { devflow, devflowWith, prompts } = setup();
+  devflow("start", "legacy", "Add mul");
+  devflow("run", "legacy");
+  devflow("approve", "legacy");
+  for (let n = 0; n < 3; n++) devflowWith({ FAKE_VERDICT: "REWORK" }, "run", "legacy", "--once");
+  devflowWith({ FAKE_PLAN_CONFLICT: "shared requirement" }, "run", "legacy", "--once");
+  devflow("run", "legacy", "--once");
+  devflow("approve", "legacy");
+  devflow("run", "legacy", "--once");
+  assert.match(implementPrompts(prompts).at(-1)!, /Untriaged review[\s\S]*VERDICT: REWORK/);
 });

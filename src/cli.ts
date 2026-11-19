@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findProjectRoot, initProject, loadConfig, type Config, type RunnerMode } from "./config.js";
@@ -12,10 +12,11 @@ import { git, headCommit, repoInfo } from "./git.js";
 import { validateZone, zoneFromDesign } from "./zone.js";
 import { checkDesign } from "./artifacts.js";
 import { adoptLock, acquireLock, latestRunLog, newRunId, readLock, releaseLock, startDetached } from "./background.js";
-import { changeFiles, planDigest } from "./snapshot.js";
+import { changeFiles, changeFolder, planDigest } from "./snapshot.js";
 import { runGatesStage, runLoop } from "./stages.js";
 import { finishJob } from "./jobs.js";
 import { applyProposal, candidates, proposeLayout, setRole, showRoles } from "./roles.js";
+import { planNodes } from "./plan-nodes.js";
 import { DevflowError, UsageError } from "./errors.js";
 import { newTask, nextStage, STAGES, TIERS, transition, type Event, type Stage, type TaskState, type Tier } from "./lifecycle.js";
 import { createTask, listTaskIds, loadTask, saveTask, validateId } from "./store.js";
@@ -25,9 +26,10 @@ const USAGE = `devflow — role-separated dev workflow
 Usage:
   devflow init [--dir <path>] [--runners mixed|claude|codex]
   devflow start <id> "<description>" [--tier small|medium|complex] [--tracker <ref>] [--zone <glob>]...
+  devflow nodes <id> [--json]
   devflow next <id>
   devflow complete <id> <stage> <outcome> [--override "<reason>"]   (gates ok needs --override)
-  devflow approve <id> [--resume | --reject "<what to change>"]
+  devflow approve <id> [--resume | --reject "<what to change>" [--node <task-id>] [--revision <n>]]
   devflow tier <id> <small|medium|complex>
   devflow escalate <id> --reason "<why>"
   devflow status [<id>] [--json]
@@ -51,7 +53,7 @@ interface Parsed {
   lists: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "revision", "to", "command"]);
+const VALUE_FLAGS = new Set(["dir", "tier", "tracker", "reason", "runners", "prompt-file", "timeout", "task", "scope-file", "override", "from-design", "run-id", "reject", "node", "revision", "to", "command"]);
 const LIST_FLAGS = new Set(["write", "expect", "allow-bash", "zone"]);
 const BOOL_FLAGS = new Set(["json", "resume", "help", "version", "probe", "once", "detach", "follow", "apply"]);
 
@@ -208,6 +210,16 @@ export async function run(argv: string[], io: Io): Promise<number> {
         io.out(json ? JSON.stringify(summary(task, config)) : `Started ${id} (${tier}). Next: ${nextStage(task, config).stage}`);
         return 0;
       }
+      case "nodes": {
+        arity(args, 1, 1, "nodes <id>");
+        const { root } = project(io);
+        const task = loadTask(root, args[0]!);
+        const path = join(changeFolder(root, task.id), "tasks.md");
+        const markdown = existsSync(path) ? readFileSync(path, "utf8") : "";
+        const nodes = [...planNodes(markdown)].map(([id, n]) => ({ id, done: n.done, text: markdown.slice(n.start, n.end) }));
+        io.out(JSON.stringify({ id: task.id, revision: task.planRevision ?? 1, nodes }));
+        return 0;
+      }
       case "next": {
         arity(args, 1, 1, "next <id>");
         const { root, config } = project(io);
@@ -232,8 +244,16 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const revisionArg = str(p, "revision");
         const revision = revisionArg === undefined ? undefined : Number(revisionArg);
         if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) throw new UsageError("--revision must be a positive integer");
+        const node = str(p, "node");
+        if (node) {
+          if (!rejectReason || p.flags.has("resume") || revision === undefined) throw new UsageError("--node requires --reject and --revision");
+          const { root } = project(io);
+          validateId(args[0]!);
+          const path = join(changeFolder(root, args[0]!), "tasks.md");
+          if (!planNodes(readFileSync(path, "utf8")).has(node)) throw new DevflowError("unknown_plan_node", "Unknown plan node " + node);
+        }
         const rev = revision === undefined ? {} : { revision };
-        let event: Event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason, ...rev } : { kind: "approve", ...rev };
+        let event: Event = p.flags.has("resume") ? { kind: "resume" } : rejectReason ? { kind: "reject", reason: rejectReason, ...(node ? { node } : {}), ...rev } : { kind: "approve", ...rev };
         if (!p.flags.has("resume") && !rejectReason) {
           const { root, config } = project(io);
           const id = args[0]!;

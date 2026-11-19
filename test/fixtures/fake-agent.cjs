@@ -36,6 +36,8 @@ process.stdin.on("end", () => {
     console.log(env.FAKE_REVIEW || "APPROVE");
   } else if (prompt.includes("You are the EXPLORE role")) {
     write(`.devflow/runs/${id}/facts.md`, "## Relevant code\n- src/math.js\n");
+  } else if (prompt.includes("Write the replacement node to node.md")) {
+    write("node.md", "- [ ] 1.1 Check negative input with node check.js\n");
   } else if (prompt.includes("You are the DESIGN role")) {
     const dir = `openspec/changes/${id}`;
     write(`${dir}/proposal.md`, "# Proposal\n\n## Why\n\nNeed mul.\n\n## What Changes\n\n- Add mul.\n\n## Capabilities\n\n### New Capabilities\n\n- `math`: arithmetic.\n\n### Modified Capabilities\n\nNone.\n\n## Impact\n\n- src/math.js\n");

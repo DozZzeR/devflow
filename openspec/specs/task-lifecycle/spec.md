@@ -80,7 +80,7 @@ The system SHALL count attempts per stage and enforce `limits.implement` and `li
 
 ### Requirement: Human-only decisions
 
-Plan approval, plan rejection, approval delegation and tier downgrade SHALL be possible only through explicit human commands (`devflow approve`, `devflow approve --reject`, `devflow delegate-approval`, `devflow tier`) or the matching MCP tools invoked on the user's instruction. `approve` MUST fail unless the task is awaiting approval. A task in `HUMAN` resumes only via `devflow tier` or `devflow approve --resume`.
+Plan approval, rejection, delegation and tier downgrade SHALL require explicit human direction through the CLI or corresponding MCP tool. `approve` MUST fail unless the task is awaiting approval. A task in `HUMAN` resumes via `devflow tier` or `devflow approve --resume`. At `plan_conflicts_limit`, a human MAY send it to design with a revision-checked rejection.
 
 #### Scenario: Approve unlocks implement
 

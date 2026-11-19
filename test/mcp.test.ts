@@ -53,7 +53,7 @@ test("tools are listed; projectDir locates the project from an unrelated cwd", a
   const c = await connect(tempDir(), env);
   try {
     const names = (await c.listTools()).tools.map((t) => t.name);
-    for (const n of ["devflow_status", "devflow_start", "devflow_run", "devflow_log", "devflow_approve", "devflow_roles_set", "devflow_job_status"]) {
+    for (const n of ["devflow_nodes", "devflow_status", "devflow_start", "devflow_run", "devflow_log", "devflow_approve", "devflow_roles_set", "devflow_job_status"]) {
       assert.ok(names.includes(n), n);
     }
     const approve = (await c.listTools()).tools.find((t) => t.name === "devflow_approve")!;
