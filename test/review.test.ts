@@ -20,13 +20,13 @@ function setup(extra: Record<string, string> = {}) {
   const cfgPath = join(root, ".devflow", "config.json");
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   cfg.openspec = { cli: "off" };
-  cfg.runners = { env: { pass: ["FAKE_REVIEW", "FAKE_PROMPT_DIR"] } };
+  cfg.runners = { env: { pass: ["FAKE_REVIEW", "FAKE_PROMPT_DIR", "FAKE_LIMIT_ROLE", "FAKE_LIMIT_OUTPUT"] } };
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   sh(root, "git", ["add", "-A"]);
   sh(root, "git", ["commit", "-q", "-m", "config"]);
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   const prompts = join(tempDir(), "prompts");
-  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
   /** Execute the compiled CLI in the fixture and return captured output and exit status. */
   const devflow = (...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env, encoding: "utf8" });
@@ -36,7 +36,7 @@ function setup(extra: Record<string, string> = {}) {
   const state = (id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
   /** Decode the CLI's newline-delimited stage reports for ordered assertions. */
   const lines = (out: string) => out.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
-  return { root, devflow, state, lines, prompts };
+  return { root, devflow, state, lines, prompts, env };
 }
 
 test("parseReview reads plain output and claude JSON results", () => {
@@ -44,6 +44,42 @@ test("parseReview reads plain output and claude JSON results", () => {
   assert.deepEqual(parseReview("x\nREJECT: add a div-by-zero test\n"), { verdict: "reject", reason: "add a div-by-zero test" });
   assert.deepEqual(parseReview('{"type":"result","result":"Looks fine.\\nAPPROVE"}'), { verdict: "approve" });
   assert.equal(parseReview("no verdict here"), undefined);
+});
+
+test("Delegated review hits the limit and stays delegated", () => {
+  const { devflow, state, lines } = setup({ FAKE_LIMIT_ROLE: "REVIEW", FAKE_LIMIT_OUTPUT: "codex" });
+  assert.equal(devflow("start", "r1", "Add mul").code, 0);
+  assert.equal(devflow("delegate-approval", "r1", "--to", "model").code, 0);
+  assert.equal(devflow("run", "r1", "--once").code, 0);
+  assert.equal(devflow("run", "r1", "--once").code, 0);
+  const limited = devflow("run", "r1", "--once");
+  assert.equal(limited.code, 75, limited.err);
+  const [report, summary] = lines(limited.out);
+  assert.equal(report.stage, "review");
+  assert.equal(report.outcome, "paused");
+  assert.equal(report.next.stage, "review");
+  assert.equal(report.next.reason, "awaiting_plan_approval");
+  assert.equal(summary.next.stage, "review");
+  assert.equal(state("r1").status, "DESIGNED");
+  assert.equal(state("r1").approval, "model");
+  assert.equal(state("r1").pause.stage, "review");
+});
+
+test("Next run retries the review and clears the pause on approval", () => {
+  const { devflow, env, state, lines } = setup({ FAKE_LIMIT_ROLE: "REVIEW", FAKE_LIMIT_OUTPUT: "codex", FAKE_REVIEW: "APPROVE" });
+  assert.equal(devflow("start", "r1", "Add mul").code, 0);
+  assert.equal(devflow("delegate-approval", "r1", "--to", "model").code, 0);
+  assert.equal(devflow("run", "r1").code, 75);
+  assert.equal(state("r1").status, "DESIGNED");
+  assert.equal(state("r1").approval, "model");
+  delete env.FAKE_LIMIT_ROLE;
+  const retried = devflow("run", "r1", "--once");
+  assert.equal(retried.code, 0, retried.err);
+  const [review] = lines(retried.out);
+  assert.equal(review.stage, "review");
+  assert.equal(review.outcome, "approve");
+  assert.equal(state("r1").status, "PLAN_APPROVED");
+  assert.equal(state("r1").pause, undefined);
 });
 
 test("without delegation the run stops for the human", () => {

@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitProject, write } from "./gitrepo.js";
+import { loadTask, saveTask } from "../src/store.js";
+import { pathHashes } from "../src/snapshot.js";
 
 /** Path to the built CLI entry used by subprocess-based tests. */
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
@@ -46,6 +48,27 @@ test("gate all records the result only when gates is next; single gates never ch
   assert.deepEqual(out.results.map((x: { name: string; outcome: string }) => `${x.name}:${x.outcome}`), ["zone:pass", "tests:pass", "rollback:pass"]);
   assert.equal(out.recorded, true);
   assert.equal(state(root, "s1").status, "DONE");
+});
+
+test("gate records a pass and reports the unchanged dirty path as a warning", () => {
+  const { root } = gitProject();
+  assert.equal(devflow(root, "start", "t1", "Add mul", "--tier", "small", "--zone", "src/**", "--zone", "tests/**").code, 0);
+  write(root, "README.md", "human edit");
+  assert.equal(devflow(root, "complete", "t1", "implement", "ok").code, 0);
+  const task = loadTask(root, "t1");
+  task.dirtyAtImplement = { at: task.updatedAt, paths: pathHashes(root, ["README.md"]) };
+  saveTask(root, task);
+  write(root, "src/math.js", "exports.add = (a, b) => a + b; exports.mul = (a, b) => a * b;");
+  write(root, "tests/mul.test.js", "if (require('../src/math').mul(2, 3) !== 6) throw new Error('mul');");
+
+  const result = devflow(root, "gate", "t1");
+  assert.equal(result.code, 0, result.out + result.err);
+  const out = JSON.parse(result.out);
+  assert.equal(out.recorded, true);
+  assert.deepEqual(out.results[0].warnings, ["preexisting_change:README.md"]);
+  const finished = loadTask(root, "t1");
+  assert.equal(finished.status, "DONE");
+  assert.equal(finished.history.some((h) => h.reason === "zone_violation"), false);
 });
 
 test("a zone violation through gate all escalates the task", () => {

@@ -3,11 +3,11 @@
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Config, Role } from "./config.js";
+import type { Config } from "./config.js";
 import { DEVFLOW_DIR } from "./config.js";
 import { checkDesign } from "./artifacts.js";
 import { DevflowError } from "./errors.js";
-import { nextStage, transition, type NextInfo, type TaskState } from "./lifecycle.js";
+import { nextStage, reviewRole, transition, type NextInfo, type TaskState } from "./lifecycle.js";
 import { block } from "./prompts.js";
 import { runRole } from "./runners.js";
 import { changeFiles, changeFolder, planDigest } from "./snapshot.js";
@@ -17,23 +17,14 @@ import { loadTask, saveTask } from "./store.js";
 export interface ReviewReport {
   /** Identifies delegated review separately from a numbered execution stage. */
   stage: "review";
-  /** Whether review approves, rejects, needs intervention or has become stale. */
-  outcome: "approve" | "reject" | "human" | "stale";
+  /** Whether review approves, rejects, needs intervention, has become stale or pauses. */
+  outcome: "approve" | "reject" | "human" | "stale" | "paused";
   /** Machine-readable explanation when the decision cannot be applied normally. */
   reason?: string;
   /** Optional diagnostic evidence associated with the review. */
   details?: unknown;
   /** Routing decision computed from the resulting or latest task state. */
   next: NextInfo;
-}
-
-/** Choose review, complex design or design in that order and require a supported read-only runner. */
-export function reviewRole(config: Config): Role {
-  const role = config.roles.review ?? config.roles.design_complex ?? config.roles.design;
-  if (role.runner !== "claude" && role.runner !== "codex") {
-    throw new DevflowError("review_runner_unsupported", "The review role must run on claude or codex (it needs a read-only run).");
-  }
-  return role;
 }
 
 /** The lines a role answered with: plain output plus the text of claude's JSON "result", markdown bold stripped. */
@@ -124,6 +115,18 @@ export async function runDelegatedReview(root: string, config: Config, id: strin
       savePrompt: true,
       cwd: changeFolder(copyRoot, id),
     });
+    if (r.usageLimit) {
+      const current = loadTask(root, id);
+      if (current.updatedAt !== task.updatedAt || current.status !== "DESIGNED" || current.approval !== "model") {
+        return { stage: "review", outcome: "stale", reason: "review_stale", next: nextStage(current, config) };
+      }
+      const paused = transition(current, { kind: "pause", stage: "review", ...r.usageLimit }, config, io.now());
+      saveTask(root, paused);
+      return {
+        stage: "review", outcome: "paused", reason: "usage_limit",
+        details: { ...r.usageLimit, log: r.log }, next: nextStage(paused, config),
+      };
+    }
     runOk = r.ok;
     output = existsSync(r.log) ? readFileSync(r.log, "utf8") : "";
   } finally {

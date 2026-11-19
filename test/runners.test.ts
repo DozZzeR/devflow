@@ -5,9 +5,38 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkOutputs, claudeInvocation, claudeSettings, codexInvocation, commandInvocation, validateScope } from "../src/runners.js";
+import { checkOutputs, claudeInvocation, claudeSettings, codexInvocation, commandInvocation, runRole, validateScope } from "../src/runners.js";
 import { DevflowError } from "../src/errors.js";
 import { tempDir } from "./helpers.js";
+import { initProject, loadConfig } from "../src/config.js";
+import { run } from "../src/cli.js";
+import { fakeBin, testEnv } from "./fake.js";
+
+test("Claude exits successfully but reports a limit through runRole and exec-role", async () => {
+  const root = tempDir();
+  initProject(root, { detected: { claude: true, codex: false } });
+  const config = loadConfig(root);
+  config.runners.env.pass.push("FAKE_PRINT");
+  writeFileSync(join(root, ".devflow", "config.json"), JSON.stringify(config));
+  const env = testEnv(fakeBin(join(tempDir(), "bin"), ["claude"]), {
+    FAKE_PRINT: JSON.stringify({ api_error: "usage_limit_reached", result: "Usage limit reached, resets 5pm" }),
+  });
+  const prompt = join(root, "prompt.txt");
+  writeFileSync(prompt, "Test runner");
+  const result = await runRole({
+    root, config, roleName: "explore", role: config.roles.explore, prompt: "Test runner",
+    write: [], bash: [], expect: [], timeoutMs: 10_000, parentEnv: env,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.usageLimit, { runner: "claude", reset: "5pm" });
+  const output: string[] = [];
+  assert.equal(await run(["exec-role", "explore", "--prompt-file", prompt], {
+    cwd: root, env, out: (s) => output.push(s), err: (s) => assert.fail(s),
+    now: () => new Date().toISOString(), readStdin: async () => "",
+  }), 1);
+  assert.deepEqual(JSON.parse(output[0]!).usageLimit, result.usageLimit);
+});
 
 /** Match a thrown domain error by its machine-readable reason. */
 const reason = (r: string) => (e: unknown) => e instanceof DevflowError && e.reason === r;

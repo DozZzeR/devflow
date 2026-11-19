@@ -9,6 +9,7 @@ import { matchesAny } from "./glob.js";
 import type { GateOutcome, TaskState } from "./lifecycle.js";
 import { openLog } from "./logs.js";
 import { launchShell } from "./proc.js";
+import { pathHashes } from "./snapshot.js";
 import { outsideZone } from "./zone.js";
 
 /** Execution order for checking scope, the working tree and regression sensitivity. */
@@ -96,10 +97,21 @@ export function zoneGate(ctx: GateContext): GateResult {
   }
   const changes = changeSet(ctx.root, ctx.task.base!);
   const effectiveZone = [...zone, ...(ctx.config.build?.outputs ?? [])];
-  const outside = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), effectiveZone);
-  return outside.length
-    ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside }, durationMs: Date.now() - started }
-    : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
+  /** Exclude this task's own OpenSpec change folder from code-zone enforcement. */
+  const outsidePlan = (path: string) => !path.startsWith(`openspec/changes/${ctx.task.id}/`);
+  const outside = outsideZone(changes.filter(outsidePlan), effectiveZone);
+  const snapshot = ctx.task.dirtyAtImplement?.paths ?? {};
+  const candidates = outside.filter((path) => Object.hasOwn(snapshot, path));
+  const current = pathHashes(ctx.root, candidates);
+  const preexisting = candidates.filter((path) => current[path] === snapshot[path]);
+  const exempt = new Set(preexisting);
+  const changed = new Set(changes);
+  const reverted = outsideZone(Object.keys(snapshot).filter((path) => outsidePlan(path) && !changed.has(path)), effectiveZone);
+  const counted = [...outside.filter((path) => !exempt.has(path)), ...reverted].sort();
+  const warnings = preexisting.map((path) => `preexisting_change:${path}`);
+  return counted.length
+    ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside: counted, preexisting }, warnings, durationMs: Date.now() - started }
+    : { name: "zone", outcome: "pass", details: { changed: changes.length, preexisting }, warnings, durationMs: Date.now() - started };
 }
 
 /** Process result and log used to classify a test or setup phase. */

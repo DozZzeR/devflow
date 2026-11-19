@@ -2,12 +2,78 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextStage, transition } from "../src/lifecycle.js";
+import { nextStage, TaskStateSchema, transition } from "../src/lifecycle.js";
 import { DevflowError } from "../src/errors.js";
 import { NOW, config, fail, ok, play, task, verify } from "./helpers.js";
 
 /** Shared validated configuration for lifecycle transition cases. */
 const cfg = config();
+
+test("pauses preserve state and attempts, even at a limit of one", () => {
+  const initial = task("small");
+  const configWithLimit = config({ limits: { implement: 1 } });
+  const pause = { kind: "pause", stage: "implement", runner: "claude", reset: "5pm" } as const;
+  const paused = play(initial, configWithLimit, pause, pause, pause);
+  assert.equal(paused.status, initial.status);
+  assert.equal(paused.tier, initial.tier);
+  assert.deepEqual(paused.attempts, initial.attempts);
+  assert.deepEqual(paused.counters, initial.counters);
+  assert.equal(nextStage(paused, cfg).attempt, 1);
+  assert.deepEqual(nextStage(paused, cfg).pause, { stage: "implement", runner: "claude", reason: "usage_limit", reset: "5pm", at: NOW });
+  assert.deepEqual(paused.history.at(-1), { at: NOW, kind: "pause", stage: "implement", reason: "usage_limit", to: "5pm" });
+  rejects(() => play(task(), cfg, pause), "stage_not_next");
+});
+
+test("Pause keeps attempts already spent and preserves the next attempt number", () => {
+  const failed = play(task("small"), cfg, fail("implement"));
+  assert.equal(failed.attempts.implement, 1);
+  const paused = play(failed, cfg, { kind: "pause", stage: "implement", runner: "claude" });
+  assert.equal(paused.status, failed.status);
+  assert.equal(paused.attempts.implement, 1);
+  assert.equal(nextStage(paused, cfg).stage, "implement");
+  assert.equal(nextStage(paused, cfg).attempt, 2);
+  assert.deepEqual(nextStage(paused, cfg).pause, paused.pause);
+});
+
+test("the next stage outcome clears its pause", () => {
+  const paused = play(task(), cfg, { kind: "pause", stage: "explore", runner: "codex" });
+  assert.equal(play(paused, cfg, ok("explore")).pause, undefined);
+});
+
+test("Review pause in next requires delegated approval and clears on approval", () => {
+  const designed = play(task(), cfg, ok("explore"), ok("design"));
+  const pause = { kind: "pause", stage: "review", runner: "claude" } as const;
+  rejects(() => play(designed, cfg, pause), "stage_not_next");
+  const paused = play(designed, cfg, { kind: "delegate", to: "model" }, pause);
+  assert.equal(paused.pause?.stage, "review");
+  const next = nextStage(paused, cfg);
+  assert.equal(next.stage, "review");
+  assert.equal(next.reason, "awaiting_plan_approval");
+  assert.deepEqual(next.role, cfg.roles.review ?? cfg.roles.design_complex ?? cfg.roles.design);
+  assert.equal(next.attempt, undefined);
+  const approved = play(paused, cfg, { kind: "approve" });
+  assert.equal(approved.pause, undefined);
+  assert.equal(nextStage(approved, cfg).stage, "implement");
+  assert.deepEqual(paused.history.at(-1), { at: NOW, kind: "pause", reason: "usage_limit", results: "review" });
+  assert.equal(play(paused, cfg, { kind: "delegate", to: "human" }).pause, undefined);
+});
+
+test("schema 2 accepts older state and retains only the initial dirty snapshot", () => {
+  const original = task("small");
+  const state = TaskStateSchema.parse(JSON.parse(JSON.stringify(original)));
+  assert.deepEqual(state, original);
+  const snapped = play(state, cfg, { kind: "dirty_snapshot", paths: { "README.md": "sha256:example", "docs/old.md": null } });
+  const retried = play(snapped, cfg, { kind: "dirty_snapshot", paths: {} });
+  assert.deepEqual(TaskStateSchema.parse(retried).dirtyAtImplement, snapped.dirtyAtImplement);
+  assert.deepEqual(retried.history.filter((h) => h.kind === "dirty"), [{ kind: "dirty", at: NOW, results: "2 paths" }]);
+});
+
+test("dirty snapshot preserves a path named __proto__ through state parsing", () => {
+  const paths = { ["__proto__"]: "sha256:example" };
+  const state = play(task("small"), cfg, { kind: "dirty_snapshot", paths });
+  const loaded = TaskStateSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(loaded.dirtyAtImplement?.paths, paths);
+});
 
 /** Assert that an invalid transition raises the expected domain reason. */
 function rejects(fn: () => unknown, reason: string) {

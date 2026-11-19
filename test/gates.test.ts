@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { initProject, loadConfig, type Config } from "../src/config.js";
 import { rollbackGate, runAllGates, testsGate, zoneGate } from "../src/gates.js";
@@ -11,6 +11,7 @@ import { newTask, type TaskState, type Tier } from "../src/lifecycle.js";
 import { DevflowError } from "../src/errors.js";
 import { gitProject, sh, write } from "./gitrepo.js";
 import { NOW, tempDir } from "./helpers.js";
+import { pathHashes } from "../src/snapshot.js";
 
 /** Assemble gate inputs for a temporary repository and a selected base commit. */
 function ctx(root: string, base: string | undefined, opts: { zone?: string[]; tier?: Tier; config?: (c: Config) => void } = {}) {
@@ -42,6 +43,39 @@ test("zone gate: pass inside, fail lists outsiders, blocked without zone on medi
   assert.deepEqual([small.outcome, small.warnings], ["pass", ["no_zone"]]);
 });
 
+test("zone gate warns on unchanged human edits and deletions, and counts role edits and reverts", () => {
+  const { root } = gitProject();
+  write(root, "README.md", "base");
+  write(root, "docs/old.md", "old");
+  sh(root, "git", ["add", "-A"]);
+  sh(root, "git", ["commit", "-qm", "documentation"]);
+  const base = sh(root, "git", ["rev-parse", "HEAD"]).trim();
+  write(root, "README.md", "human edit");
+  unlinkSync(join(root, "docs/old.md"));
+  const gate = ctx(root, base, { zone: ["src/**"] });
+  gate.task.dirtyAtImplement = { at: NOW, paths: pathHashes(root, ["README.md", "docs/old.md"]) };
+  write(root, "src/math.js", "role implementation");
+
+  const passed = zoneGate(gate);
+  assert.equal(passed.outcome, "pass");
+  assert.deepEqual(passed.warnings, ["preexisting_change:README.md", "preexisting_change:docs/old.md"]);
+  assert.deepEqual(passed.details, { changed: 3, preexisting: ["README.md", "docs/old.md"] });
+  for (const edit of [
+    () => write(root, "README.md", "role edit"),
+    () => unlinkSync(join(root, "README.md")),
+    () => sh(root, "git", ["checkout", "--", "README.md"]),
+  ]) {
+    edit();
+    const failed = zoneGate(gate);
+    assert.equal(failed.reason, "outside_zone");
+    assert.deepEqual(failed.details, { outside: ["README.md"], preexisting: ["docs/old.md"] });
+  }
+
+  write(root, "README.md", "human edit");
+  write(root, "notes.txt", "role added this");
+  assert.deepEqual(zoneGate(gate).details, { outside: ["notes.txt"], preexisting: ["README.md", "docs/old.md"] });
+});
+
 test("generated outputs join an existing impact zone", () => {
   const { root, base } = gitProject();
   write(root, "src/a.ts", "export {};\n");
@@ -55,13 +89,13 @@ test("generated outputs join an existing impact zone", () => {
   for (const output of ["plugins/**", "./plugins/**", "././plugins/**"]) {
     const result = zoneGate(ctx(root, base, { zone, config: withOutput(output) }));
     assert.equal(result.outcome, "pass", JSON.stringify({ output, result }));
-    assert.deepEqual(result.details, { changed: 2 });
+    assert.deepEqual(result.details, { changed: 2, preexisting: [] });
   }
   assert.equal(zoneGate(ctx(root, base, { zone: ["././src/**"], config })).outcome, "pass");
   assert.deepEqual(zone, ["src/**"]);
   const withoutBuild = zoneGate(ctx(root, base, { zone }));
   assert.equal(withoutBuild.outcome, "fail");
-  assert.deepEqual(withoutBuild.details, { outside: ["plugins/x/index.js"] });
+  assert.deepEqual(withoutBuild.details, { outside: ["plugins/x/index.js"], preexisting: [] });
   const noZone = zoneGate(ctx(root, base, { config }));
   assert.deepEqual([noZone.outcome, noZone.reason], ["blocked", "no_zone"]);
 });

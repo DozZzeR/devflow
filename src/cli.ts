@@ -169,6 +169,7 @@ function summary(task: TaskState, config: Config) {
     reason: n.reason ?? null,
     tracker: task.tracker ?? null,
     attempts: task.attempts,
+    pause: task.pause ?? null,
     escalations: task.history.filter((h) => h.kind === "escalate" || h.kind === "tier"),
   };
 }
@@ -336,6 +337,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
             const next = r.next ?? `(${r.reason})`;
             const a = r.attempts;
             io.out(`${r.id}  ${r.tier}  ${r.status}  next: ${next}  attempts: impl ${a.implement}, verify ${a.verify}${r.tracker ? `  [${r.tracker}]` : ""}`);
+            if (r.pause) {
+              const { stage, at, runner, reset } = r.pause;
+              io.out(`    paused at ${stage} since ${at}: usage limit (${runner}), ${reset ? `resets ${reset}` : "reset unknown"}`);
+            }
             for (const e of r.escalations) io.out(`    ${e.at}  ${e.kind} ${e.from} → ${e.to}${e.reason ? `: ${e.reason}` : ""}`);
             const lock = readLock(root, r.id);
             if (lock) io.out(`    run ${lock.runId} ${lock.status}${lock.pid ? ` pid ${lock.pid}` : ""}${lock.log ? `  log: ${lock.log}` : ""}`);
@@ -401,6 +406,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const zone = design ? zoneFromDesign(design) : listed!;
         validateZone(zone);
         task.zone = zone;
+        delete task.pause;
         task.updatedAt = io.now();
         task.history.push({ at: task.updatedAt, kind: "zone", reason: zone.join(", ") });
         saveTask(root, task);
@@ -416,6 +422,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         const r = git(root, ["rev-parse", "--verify", "--end-of-options", `${args[1]!}^{commit}`], { allowFail: true });
         if (r.code !== 0) throw new DevflowError("invalid_commit", `"${args[1]}" is not a commit.`);
         task.base = r.stdout.trim();
+        delete task.pause;
         task.updatedAt = io.now();
         task.history.push({ at: task.updatedAt, kind: "base", reason: task.base });
         saveTask(root, task);
@@ -483,8 +490,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
             onStage: (r) => io.out(JSON.stringify(r)),
           });
           const final = nextStage(loadTask(root, id), config);
-          io.out(JSON.stringify({ id, done: true, stages: reports.length, next: final }));
           const last = reports.at(-1);
+          const paused = last?.outcome === "paused";
+          io.out(JSON.stringify({ id, done: true, stages: reports.length, next: final, ...(paused ? { outcome: "paused", pause: final.pause } : {}) }));
+          if (paused) return 75;
           return last && ["fail", "blocked"].includes(last.outcome) ? 1 : 0;
         } finally {
           releaseLock(root, id, runId);

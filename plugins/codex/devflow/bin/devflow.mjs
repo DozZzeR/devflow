@@ -20770,11 +20770,22 @@ function roleFor(stage, tier, config2) {
       return void 0;
   }
 }
+function reviewRole(config2) {
+  const role2 = config2.roles.review ?? config2.roles.design_complex ?? config2.roles.design;
+  if (role2.runner !== "claude" && role2.runner !== "codex") {
+    throw new DevflowError("review_runner_unsupported", "The review role must run on claude or codex (it needs a read-only run).");
+  }
+  return role2;
+}
 function nextStage(task, config2) {
   const { stage, reason } = stageFor(task);
   const info = { id: task.id, status: task.status, tier: task.tier, stage };
+  if (task.pause) info.pause = task.pause;
   if (reason) info.reason = reason;
-  if (stage) {
+  if (task.status === "DESIGNED" && task.approval === "model" && task.pause?.stage === "review") {
+    info.stage = "review";
+    info.role = reviewRole(config2);
+  } else if (stage) {
     const role2 = roleFor(stage, task.tier, config2);
     if (role2) info.role = role2;
     if (stage !== "gates") info.attempt = task.attempts[stage] + 1;
@@ -20784,6 +20795,7 @@ function nextStage(task, config2) {
 function transition(task, event, config2, now) {
   const t = structuredClone(task);
   t.updatedAt = now;
+  if (event.kind !== "pause") delete t.pause;
   const toHuman = (reason) => {
     t.status = "HUMAN";
     t.humanReason = reason;
@@ -20826,6 +20838,32 @@ function transition(task, event, config2, now) {
     }
   };
   switch (event.kind) {
+    case "pause": {
+      const { stage, runner, reset } = event;
+      if (stage === "review") {
+        if (task.status !== "DESIGNED" || task.approval !== "model") {
+          throw new DevflowError("stage_not_next", `Review is not next for task ${task.id}.`);
+        }
+      } else {
+        checkNext(stage);
+      }
+      t.pause = { stage, runner, reason: "usage_limit", at: now, ...reset === void 0 ? {} : { reset } };
+      t.history.push({
+        kind: "pause",
+        at: now,
+        reason: "usage_limit",
+        ...stage === "review" ? { results: "review" } : { stage },
+        ...reset === void 0 ? {} : { to: reset }
+      });
+      return t;
+    }
+    case "dirty_snapshot": {
+      if (!t.dirtyAtImplement) {
+        t.dirtyAtImplement = { at: now, paths: { ...event.paths } };
+        t.history.push({ kind: "dirty", at: now, results: `${Object.keys(event.paths).length} paths` });
+      }
+      return t;
+    }
     case "complete": {
       const { stage, outcome } = event;
       checkNext(stage);
@@ -21040,7 +21078,7 @@ function applyTierChange(t, to) {
     t.status = "PLAN_APPROVED";
   }
 }
-var TIERS, STATES, STAGES, OUTCOMES, HistoryEntrySchema, PLAN_CONFLICT_LIMIT, COUNTERS_ZERO, TaskStateSchema, ZERO_ATTEMPTS, TIER_ORDER;
+var TIERS, STATES, STAGES, OUTCOMES, HistoryEntrySchema, PLAN_CONFLICT_LIMIT, COUNTERS_ZERO, DirtyPathsSchema, TaskStateSchema, ZERO_ATTEMPTS, TIER_ORDER;
 var init_lifecycle = __esm({
   "src/lifecycle.ts"() {
     "use strict";
@@ -21069,7 +21107,7 @@ var init_lifecycle = __esm({
       /** Timestamp of the recorded decision. */
       at: external_exports.string(),
       /** Event category used to interpret the optional history fields. */
-      kind: external_exports.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
+      kind: external_exports.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked", "pause", "dirty"]),
       /** Stage associated with the recorded event, when applicable. */
       stage: external_exports.enum(STAGES).optional(),
       /** First gate that stopped a gate run. */
@@ -21089,6 +21127,11 @@ var init_lifecycle = __esm({
     });
     PLAN_CONFLICT_LIMIT = 2;
     COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
+    DirtyPathsSchema = external_exports.custom((value) => {
+      if (value === null || typeof value !== "object") return false;
+      const prototype = Object.getPrototypeOf(value);
+      return (prototype === Object.prototype || prototype === null) && Object.values(value).every((hash2) => hash2 === null || typeof hash2 === "string");
+    });
     TaskStateSchema = external_exports.strictObject({
       /** Persistent format version accepted by this reader. */
       schema: external_exports.literal(2),
@@ -21125,6 +21168,19 @@ var init_lifecycle = __esm({
       base: external_exports.string().optional(),
       /** Approved project-relative write globs. */
       zone: external_exports.array(external_exports.string()).optional(),
+      /** Provider-limit interruption that preserves the current status and attempt. */
+      pause: external_exports.strictObject({
+        stage: external_exports.enum([...STAGES, "review"]),
+        reason: external_exports.literal("usage_limit"),
+        runner: external_exports.string(),
+        at: external_exports.string(),
+        reset: external_exports.string().optional()
+      }).optional(),
+      /** Initial content hashes of paths already changed when implementation first began. */
+      dirtyAtImplement: external_exports.strictObject({
+        at: external_exports.string(),
+        paths: DirtyPathsSchema
+      }).optional(),
       /** Escalation and invalidation counts tracked separately from role attempts. */
       counters: external_exports.strictObject({
         gatesFailedInARow: external_exports.number().int().nonnegative(),
@@ -39343,10 +39399,62 @@ function spawnAndWait(file2, args, verbatim, opts) {
 
 // src/runners.ts
 init_errors3();
-init_logs();
 import { createHash } from "node:crypto";
 import { lstatSync as lstatSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
+
+// src/limits.ts
+function resetText(text2) {
+  const phrase = /\b(?:resets|try again (?:at|in))\b([^\r\n|]*)/i.exec(text2)?.[1]?.trim();
+  if (!phrase) return void 0;
+  const words = phrase.split(/\s+/);
+  const end = words.findIndex((word) => word.endsWith("."));
+  if (end >= 0) {
+    words.length = end + 1;
+    const last = words[end];
+    if (!/^(?:[a-z]\.){2,}$/i.test(last)) words[end] = last.slice(0, -1);
+  }
+  return words.join(" ").trim().slice(0, 100) || void 0;
+}
+function detectUsageLimit(runner, logText, exitCode) {
+  if (exitCode === null) return void 0;
+  if (runner === "claude") {
+    for (const line of logText.trimEnd().split(/\r?\n/).reverse()) {
+      let value;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const result = value;
+      if (result.api_error_status !== 429 && result.api_error !== "usage_limit_reached") return void 0;
+      const message = typeof result.result === "string" ? result.result : "";
+      const epoch = /\|(\d+)$/.exec(message)?.[1];
+      const date5 = epoch === void 0 ? void 0 : new Date(Number(epoch) * 1e3);
+      const reset = date5 && Number.isFinite(date5.getTime()) ? date5.toISOString() : resetText(message);
+      return reset === void 0 ? { runner } : { runner, reset };
+    }
+  }
+  if (runner === "codex" && typeof exitCode === "number" && exitCode !== 0) {
+    const tail3 = logText.replace(/\r?\n$/, "").split(/\r?\n/).slice(-50);
+    const isLimit = (line) => /error/i.test(line) && /usage limit|\b429\b/i.test(line);
+    const index = tail3.findLastIndex(isLimit);
+    if (index >= 0) {
+      const blockStart = tail3.slice(0, index).findLastIndex((line) => !line.trim()) + 1;
+      const first = blockStart + tail3.slice(blockStart, index + 1).findIndex(isLimit);
+      const block2 = tail3.slice(first, index + 10);
+      const blank = block2.findIndex((line) => !line.trim());
+      if (blank >= 0) block2.length = blank;
+      const reset = resetText(block2.join("\n"));
+      return reset === void 0 ? { runner } : { runner, reset };
+    }
+  }
+  return void 0;
+}
+
+// src/runners.ts
+init_logs();
 init_jobs();
 function claudeInvocation(req, settingsPath) {
   const allowed = ["Read", "Grep", "Glob"];
@@ -39515,8 +39623,10 @@ async function runRole(req) {
     log.close();
   }
   const missingOutputs = checkOutputs(workDir, req.expect, before);
+  const runner = req.role.runner;
+  const usageLimit = runner === "claude" || runner === "codex" ? detectUsageLimit(runner, readFileSync5(log.path, "utf8"), launched.exitCode) : void 0;
   const result = {
-    ok: launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
+    ok: !usageLimit && launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
     role: req.roleName,
     runner: req.role.runner,
     model: req.role.model,
@@ -39526,7 +39636,8 @@ async function runRole(req) {
     missingOutputs,
     scope: inv.scope,
     apiKeyEnv,
-    log: log.path
+    log: log.path,
+    ...usageLimit ? { usageLimit } : {}
   };
   if (launched.killFailed) result.killFailed = true;
   return result;
@@ -39731,8 +39842,8 @@ function deny(reason) {
 // src/gates.ts
 init_config();
 init_errors3();
-import { copyFileSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, rmSync as rmSync4 } from "node:fs";
-import { dirname as dirname5, join as join10 } from "node:path";
+import { copyFileSync, lstatSync as lstatSync5, mkdirSync as mkdirSync5, rmSync as rmSync4 } from "node:fs";
+import { dirname as dirname5, join as join11 } from "node:path";
 
 // src/git.ts
 init_errors3();
@@ -39840,9 +39951,86 @@ function removeWorktree(root, path) {
 // src/gates.ts
 init_logs();
 
+// src/snapshot.ts
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync8, lstatSync as lstatSync4, readdirSync as readdirSync3, readFileSync as readFileSync8, readlinkSync } from "node:fs";
+import { join as join10, relative as relative4, sep as sep4 } from "node:path";
+var sha = (data) => createHash2("sha256").update(data).digest("hex");
+function pathHashes(root, paths) {
+  return Object.fromEntries(paths.map((path) => {
+    const absolute = join10(root, path);
+    try {
+      const stat = lstatSync4(absolute);
+      if (stat.isSymbolicLink()) return [path, `link:${sha(readlinkSync(absolute, { encoding: "buffer" }))}`];
+      if (stat.isFile()) return [path, `sha256:${sha(readFileSync8(absolute))}`];
+    } catch (error62) {
+      const { code } = error62;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error62;
+    }
+    return [path, null];
+  }));
+}
+function configHash(config2) {
+  const stable = (v) => Array.isArray(v) ? v.map(stable) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable(v[k])])) : v;
+  return sha(JSON.stringify(stable(config2)));
+}
+function snapshotDigest(root, base, config2) {
+  const h = createHash2("sha256");
+  h.update(`base\0${base}\0config\0${configHash(config2)}\0`);
+  for (const p of changeSet(root, base)) {
+    const abs = join10(root, p);
+    let entry;
+    try {
+      const st = lstatSync4(abs);
+      const mode = process.platform === "win32" ? 0 : st.mode & 511;
+      const content = st.isSymbolicLink() ? `link` : st.isFile() ? sha(readFileSync8(abs)) : `other`;
+      entry = `${mode.toString(8)}\0${content}`;
+    } catch {
+      entry = "<deleted>";
+    }
+    h.update(`${p}\0${entry}\0`);
+  }
+  return h.digest("hex");
+}
+function normaliseTasks(text2) {
+  return text2.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]").replace(/\r\n/g, "\n");
+}
+function walk(dir, rootDir, out) {
+  for (const e of readdirSync3(dir, { withFileTypes: true })) {
+    const abs = join10(dir, e.name);
+    if (e.isDirectory()) walk(abs, rootDir, out);
+    else if (e.isFile()) out.push(relative4(rootDir, abs).split(sep4).join("/"));
+  }
+}
+function changeFolder(root, id) {
+  return join10(root, "openspec", "changes", id);
+}
+function changeFiles(root, id) {
+  const dir = changeFolder(root, id);
+  if (!existsSync8(dir)) return [];
+  const out = [];
+  walk(dir, dir, out);
+  return out.sort();
+}
+function planDigest(root, id, revision = 1) {
+  const dir = changeFolder(root, id);
+  const h = createHash2("sha256");
+  h.update(`revision\0${revision}\0`);
+  for (const f of changeFiles(root, id)) {
+    let content = readFileSync8(join10(dir, f), "utf8").replace(/\r\n/g, "\n");
+    if (f === "tasks.md") content = normaliseTasks(content);
+    h.update(`${f}\0${sha(content)}\0`);
+  }
+  return h.digest("hex");
+}
+function changeFileHashes(root, id) {
+  const dir = changeFolder(root, id);
+  return new Map(changeFiles(root, id).map((f) => [f, sha(readFileSync8(join10(dir, f)))]));
+}
+
 // src/zone.ts
 init_errors3();
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 function validateZone(globs) {
   for (const g of globs) {
     if (!g || g.startsWith("/") || g.startsWith("\\") || /^[A-Za-z]:/.test(g) || g.includes("..")) {
@@ -39867,7 +40055,7 @@ function parseImpactZone(markdown) {
 function zoneFromDesign(file2) {
   let text2;
   try {
-    text2 = readFileSync8(file2, "utf8");
+    text2 = readFileSync9(file2, "utf8");
   } catch {
     throw new DevflowError("no_design", `Cannot read ${file2}.`);
   }
@@ -39920,8 +40108,18 @@ function zoneGate(ctx) {
   }
   const changes = changeSet(ctx.root, ctx.task.base);
   const effectiveZone = [...zone, ...ctx.config.build?.outputs ?? []];
-  const outside2 = outsideZone(changes.filter((p) => !p.startsWith(`openspec/changes/${ctx.task.id}/`)), effectiveZone);
-  return outside2.length ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside: outside2 }, durationMs: Date.now() - started } : { name: "zone", outcome: "pass", details: { changed: changes.length }, durationMs: Date.now() - started };
+  const outsidePlan = (path) => !path.startsWith(`openspec/changes/${ctx.task.id}/`);
+  const outside2 = outsideZone(changes.filter(outsidePlan), effectiveZone);
+  const snapshot2 = ctx.task.dirtyAtImplement?.paths ?? {};
+  const candidates2 = outside2.filter((path) => Object.hasOwn(snapshot2, path));
+  const current = pathHashes(ctx.root, candidates2);
+  const preexisting = candidates2.filter((path) => current[path] === snapshot2[path]);
+  const exempt = new Set(preexisting);
+  const changed = new Set(changes);
+  const reverted = outsideZone(Object.keys(snapshot2).filter((path) => outsidePlan(path) && !changed.has(path)), effectiveZone);
+  const counted = [...outside2.filter((path) => !exempt.has(path)), ...reverted].sort();
+  const warnings = preexisting.map((path) => `preexisting_change:${path}`);
+  return counted.length ? { name: "zone", outcome: "fail", reason: "outside_zone", details: { outside: counted, preexisting }, warnings, durationMs: Date.now() - started } : { name: "zone", outcome: "pass", details: { changed: changes.length, preexisting }, warnings, durationMs: Date.now() - started };
 }
 async function runCommand(ctx, command, cwd, label) {
   const log = openLog(ctx.root, label, ctx.task.id);
@@ -39960,10 +40158,10 @@ async function testsGate(ctx) {
 function assertNoLinkedAncestors(projectDir, p) {
   let dir = projectDir;
   for (const part of p.split("/").slice(0, -1)) {
-    dir = join10(dir, part);
+    dir = join11(dir, part);
     let st;
     try {
-      st = lstatSync4(dir);
+      st = lstatSync5(dir);
     } catch {
       return;
     }
@@ -39975,7 +40173,7 @@ function assertNoLinkedAncestors(projectDir, p) {
 function applyPaths(root, projectDir, paths) {
   const present = (p) => {
     try {
-      return lstatSync4(join10(root, p));
+      return lstatSync5(join11(root, p));
     } catch {
       return void 0;
     }
@@ -39983,18 +40181,18 @@ function applyPaths(root, projectDir, paths) {
   const ordered = [...paths.filter((p) => !present(p)), ...paths.filter((p) => present(p))];
   for (const p of ordered) {
     assertNoLinkedAncestors(projectDir, p);
-    const src = join10(root, p);
-    const dst = join10(projectDir, p);
+    const src = join11(root, p);
+    const dst = join11(projectDir, p);
     let dstStat;
     try {
-      dstStat = lstatSync4(dst);
+      dstStat = lstatSync5(dst);
     } catch {
       dstStat = void 0;
     }
     if (dstStat?.isSymbolicLink()) rmSync4(dst, { force: true });
     let st;
     try {
-      st = lstatSync4(src);
+      st = lstatSync5(src);
     } catch {
       st = void 0;
     }
@@ -40121,71 +40319,6 @@ async function runAllGates(ctx) {
 init_errors3();
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "node:fs";
 import { join as join13 } from "node:path";
-
-// src/snapshot.ts
-import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync8, lstatSync as lstatSync5, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "node:fs";
-import { join as join11, relative as relative4, sep as sep4 } from "node:path";
-var sha = (data) => createHash2("sha256").update(data).digest("hex");
-function configHash(config2) {
-  const stable = (v) => Array.isArray(v) ? v.map(stable) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable(v[k])])) : v;
-  return sha(JSON.stringify(stable(config2)));
-}
-function snapshotDigest(root, base, config2) {
-  const h = createHash2("sha256");
-  h.update(`base\0${base}\0config\0${configHash(config2)}\0`);
-  for (const p of changeSet(root, base)) {
-    const abs = join11(root, p);
-    let entry;
-    try {
-      const st = lstatSync5(abs);
-      const mode = process.platform === "win32" ? 0 : st.mode & 511;
-      const content = st.isSymbolicLink() ? `link` : st.isFile() ? sha(readFileSync9(abs)) : `other`;
-      entry = `${mode.toString(8)}\0${content}`;
-    } catch {
-      entry = "<deleted>";
-    }
-    h.update(`${p}\0${entry}\0`);
-  }
-  return h.digest("hex");
-}
-function normaliseTasks(text2) {
-  return text2.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]").replace(/\r\n/g, "\n");
-}
-function walk(dir, rootDir, out) {
-  for (const e of readdirSync3(dir, { withFileTypes: true })) {
-    const abs = join11(dir, e.name);
-    if (e.isDirectory()) walk(abs, rootDir, out);
-    else if (e.isFile()) out.push(relative4(rootDir, abs).split(sep4).join("/"));
-  }
-}
-function changeFolder(root, id) {
-  return join11(root, "openspec", "changes", id);
-}
-function changeFiles(root, id) {
-  const dir = changeFolder(root, id);
-  if (!existsSync8(dir)) return [];
-  const out = [];
-  walk(dir, dir, out);
-  return out.sort();
-}
-function planDigest(root, id, revision = 1) {
-  const dir = changeFolder(root, id);
-  const h = createHash2("sha256");
-  h.update(`revision\0${revision}\0`);
-  for (const f of changeFiles(root, id)) {
-    let content = readFileSync9(join11(dir, f), "utf8").replace(/\r\n/g, "\n");
-    if (f === "tasks.md") content = normaliseTasks(content);
-    h.update(`${f}\0${sha(content)}\0`);
-  }
-  return h.digest("hex");
-}
-function changeFileHashes(root, id) {
-  const dir = changeFolder(root, id);
-  return new Map(changeFiles(root, id).map((f) => [f, sha(readFileSync9(join11(dir, f)))]));
-}
-
-// src/artifacts.ts
 init_store();
 
 // src/plan-nodes.ts
@@ -40514,16 +40647,8 @@ init_config();
 import { cpSync, existsSync as existsSync11, mkdtempSync as mkdtempSync2, readFileSync as readFileSync12, rmSync as rmSync5, writeFileSync as writeFileSync6 } from "node:fs";
 import { tmpdir as tmpdir2 } from "node:os";
 import { join as join14 } from "node:path";
-init_errors3();
 init_lifecycle();
 init_store();
-function reviewRole(config2) {
-  const role2 = config2.roles.review ?? config2.roles.design_complex ?? config2.roles.design;
-  if (role2.runner !== "claude" && role2.runner !== "codex") {
-    throw new DevflowError("review_runner_unsupported", "The review role must run on claude or codex (it needs a read-only run).");
-  }
-  return role2;
-}
 function answerLines(output2) {
   const texts = [output2];
   for (const line of output2.split(/\r?\n/)) {
@@ -40601,6 +40726,21 @@ ${plan}`;
       savePrompt: true,
       cwd: changeFolder(copyRoot, id)
     });
+    if (r.usageLimit) {
+      const current2 = loadTask(root, id);
+      if (current2.updatedAt !== task.updatedAt || current2.status !== "DESIGNED" || current2.approval !== "model") {
+        return { stage: "review", outcome: "stale", reason: "review_stale", next: nextStage(current2, config2) };
+      }
+      const paused = transition(current2, { kind: "pause", stage: "review", ...r.usageLimit }, config2, io.now());
+      saveTask(root, paused);
+      return {
+        stage: "review",
+        outcome: "paused",
+        reason: "usage_limit",
+        details: { ...r.usageLimit, log: r.log },
+        next: nextStage(paused, config2)
+      };
+    }
     runOk = r.ok;
     output2 = existsSync11(r.log) ? readFileSync12(r.log, "utf8") : "";
   } finally {
@@ -40956,12 +41096,10 @@ async function runNextStage(root, workingConfig, id, io) {
   let task = loadTask(root, id);
   const config2 = workingConfig;
   const next = nextStage(task, config2);
-  if (!next.stage) {
-    if (next.reason === "awaiting_plan_approval" && task.approval === "model") {
-      return await runDelegatedReview(root, config2, id, io);
-    }
-    return void 0;
+  if (next.stage === "review" || !next.stage && next.reason === "awaiting_plan_approval" && task.approval === "model") {
+    return runDelegatedReview(root, config2, id, io);
   }
+  if (!next.stage) return void 0;
   const stage = next.stage;
   const report = (outcome, t, reason, details) => ({
     stage,
@@ -40970,6 +41108,12 @@ async function runNextStage(root, workingConfig, id, io) {
     ...details === void 0 ? {} : { details },
     next: nextStage(t, config2)
   });
+  const pauseOn = (r, extra) => {
+    if (!r.usageLimit) return void 0;
+    const { reset, runner } = r.usageLimit;
+    const paused = record2(root, task, { kind: "pause", stage, ...r.usageLimit }, config2, io);
+    return report("paused", paused, "usage_limit", { reset, runner, log: r.log, ...extra });
+  };
   if (task.tier !== "small" && task.planDigest && ["implement", "gates", "verify"].includes(stage)) {
     if (planDigest(root, id, task.planRevision ?? 1) !== task.planDigest) {
       task = record2(root, task, { kind: "invalidate", to: "approval", reason: "plan_changed" }, config2, io);
@@ -40981,6 +41125,8 @@ async function runNextStage(root, workingConfig, id, io) {
       const out = `.devflow/runs/${id}/facts.md`;
       const ctx = block("Living specs (read as needed)", livingSpecs(root));
       const r = await runModel(root, task, config2, io, "explore", "explore", ctx, [out], [out]);
+      const paused = pauseOn(r);
+      if (paused) return paused;
       task = record2(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config2, io);
       return report(r.ok ? "ok" : "fail", task, r.ok ? void 0 : "run_failed", r);
     }
@@ -40995,6 +41141,8 @@ async function runNextStage(root, workingConfig, id, io) {
       const filesBefore = revision ? planDigest(root, id) : "";
       const required2 = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
       const r = request?.node ? await reviseNode(root, task, config2, io, request.node, ctx) : await runModel(root, task, config2, io, "design", "design", ctx, [`${folder}/**`], required2);
+      const paused = pauseOn(r);
+      if (paused) return paused;
       if (!r.ok) {
         task = record2(root, task, { kind: "complete", stage, outcome: "fail" }, config2, io);
         return report("fail", task, "run_failed", r);
@@ -41015,6 +41163,10 @@ async function runNextStage(root, workingConfig, id, io) {
       const zone = task.zone?.length ? task.zone : small ? ["**"] : [];
       if (!zone.length) throw new DevflowError("no_zone", `Task ${id} has no impact zone; approve a design or set one with "devflow zone".`);
       const trusted = gateConfig(root, task.base, config2).config;
+      if (task.base && !task.dirtyAtImplement && repoInfo(root)) {
+        const paths = changeSet(root, task.base).filter((path) => !path.startsWith(`openspec/changes/${id}/`));
+        task = record2(root, task, { kind: "dirty_snapshot", paths: pathHashes(root, paths) }, config2, io);
+      }
       const generate = trusted.build?.generate;
       const outputs = trusted.build?.outputs ?? [];
       const generatedPaths = outputs.map((glob) => `- ${glob} (generated: default command \`${generate}\`; follow the approved plan within the allowed scope, never edit by hand)`);
@@ -41026,6 +41178,8 @@ async function runNextStage(root, workingConfig, id, io) {
       const bash = [config2.test.command];
       if (generate) bash.push(generate);
       const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash });
+      const paused = pauseOn(r);
+      if (paused) return paused;
       const answer = r.ok && r.log ? read(r.log) : "";
       const blocked2 = answer ? parseBlocked(answer) : void 0;
       if (blocked2) {
@@ -41062,10 +41216,10 @@ async function runNextStage(root, workingConfig, id, io) {
       return report(last.outcome, g.task, last.reason, { results: g.results, skipped: g.skipped, configSource: g.configSource });
     }
     case "verify":
-      return runVerify(root, task, config2, io, report);
+      return runVerify(root, task, config2, io, report, pauseOn);
   }
 }
-async function runVerify(root, task, workingConfig, io, report) {
+async function runVerify(root, task, workingConfig, io, report, pauseOn) {
   const id = task.id;
   const { config: config2 } = gateConfig(root, task.base, workingConfig);
   const snap = snapshotDigest(root, task.base, config2);
@@ -41097,6 +41251,7 @@ async function runVerify(root, task, workingConfig, io, report) {
   let wt;
   let r;
   let failure2;
+  let leftoverCopy;
   try {
     wt = addWorktree(root, task.base);
     detachWorktreeGit(wt.path);
@@ -41118,28 +41273,34 @@ async function runVerify(root, task, workingConfig, io, report) {
         ...previous ? { previousVerdict: previous } : {},
         bash: [config2.test.command]
       });
-      const produced = join16(wt.projectDir, ".devflow-verdict.md");
-      if (existsSync13(produced) && lstatSync6(produced).isFile()) {
-        mkdirSync6(dirname6(verdictPath), { recursive: true });
-        copyFileSync2(produced, verdictPath);
-      } else if (existsSync13(produced)) {
-        failure2 = "unsafe_verdict";
-      }
-      if (!r.ok) {
-        const answered = !existsSync13(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log ? verdictFromAnswer(read(r.log)) : void 0;
-        if (answered) {
+      if (!r.usageLimit) {
+        const produced = join16(wt.projectDir, ".devflow-verdict.md");
+        if (existsSync13(produced) && lstatSync6(produced).isFile()) {
           mkdirSync6(dirname6(verdictPath), { recursive: true });
-          writeFileSync7(verdictPath, answered);
-        } else {
-          failure2 = "verify_run_failed";
+          copyFileSync2(produced, verdictPath);
+        } else if (existsSync13(produced)) {
+          failure2 = "unsafe_verdict";
+        }
+        if (!r.ok) {
+          const answered = !existsSync13(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log ? verdictFromAnswer(read(r.log)) : void 0;
+          if (answered) {
+            mkdirSync6(dirname6(verdictPath), { recursive: true });
+            writeFileSync7(verdictPath, answered);
+          } else {
+            failure2 = "verify_run_failed";
+          }
         }
       }
     }
   } catch (e) {
     failure2 = e instanceof DevflowError ? e.reason : "verify_error";
   } finally {
-    if (wt && !removeDetached(root, wt.path)) failure2 = failure2 ?? "cleanup_failed";
+    if (wt && !(io.removeCopy ?? removeDetached)(root, wt.path)) {
+      leftoverCopy = wt.path;
+      failure2 = failure2 ?? "cleanup_failed";
+    }
   }
+  if (r?.usageLimit) return pauseOn(r, leftoverCopy ? { cleanup_failed: leftoverCopy } : void 0);
   const verdict = failure2 ? void 0 : verdictOf(read(verdictPath));
   if (!verdict) {
     const t2 = record2(root, task, { kind: "complete", stage: "verify", outcome: "human" }, workingConfig, io);
@@ -41161,7 +41322,7 @@ async function runLoop(root, config2, id, io, opts = {}) {
     reports.push(r);
     opts.onStage?.(r);
     if (opts.once) break;
-    if (r.outcome === "fail" || r.outcome === "blocked" || r.outcome === "human" || r.outcome === "stale") break;
+    if (["fail", "blocked", "human", "stale", "paused"].includes(r.outcome)) break;
     const delegatedApproval = r.next.reason === "awaiting_plan_approval" && loadTask(root, id).approval === "model";
     if (!r.next.stage && !delegatedApproval) break;
   }
@@ -41360,6 +41521,7 @@ function summary(task, config2) {
     reason: n.reason ?? null,
     tracker: task.tracker ?? null,
     attempts: task.attempts,
+    pause: task.pause ?? null,
     escalations: task.history.filter((h) => h.kind === "escalate" || h.kind === "tier")
   };
 }
@@ -41521,6 +41683,10 @@ async function run(argv, io) {
             const next = r.next ?? `(${r.reason})`;
             const a = r.attempts;
             io.out(`${r.id}  ${r.tier}  ${r.status}  next: ${next}  attempts: impl ${a.implement}, verify ${a.verify}${r.tracker ? `  [${r.tracker}]` : ""}`);
+            if (r.pause) {
+              const { stage, at, runner, reset } = r.pause;
+              io.out(`    paused at ${stage} since ${at}: usage limit (${runner}), ${reset ? `resets ${reset}` : "reset unknown"}`);
+            }
             for (const e of r.escalations) io.out(`    ${e.at}  ${e.kind} ${e.from} \u2192 ${e.to}${e.reason ? `: ${e.reason}` : ""}`);
             const lock = readLock(root, r.id);
             if (lock) io.out(`    run ${lock.runId} ${lock.status}${lock.pid ? ` pid ${lock.pid}` : ""}${lock.log ? `  log: ${lock.log}` : ""}`);
@@ -41586,6 +41752,7 @@ async function run(argv, io) {
         const zone = design ? zoneFromDesign(design) : listed;
         validateZone(zone);
         task.zone = zone;
+        delete task.pause;
         task.updatedAt = io.now();
         task.history.push({ at: task.updatedAt, kind: "zone", reason: zone.join(", ") });
         saveTask(root, task);
@@ -41601,6 +41768,7 @@ async function run(argv, io) {
         const r = git(root, ["rev-parse", "--verify", "--end-of-options", `${args[1]}^{commit}`], { allowFail: true });
         if (r.code !== 0) throw new DevflowError("invalid_commit", `"${args[1]}" is not a commit.`);
         task.base = r.stdout.trim();
+        delete task.pause;
         task.updatedAt = io.now();
         task.history.push({ at: task.updatedAt, kind: "base", reason: task.base });
         saveTask(root, task);
@@ -41668,8 +41836,10 @@ async function run(argv, io) {
             onStage: (r) => io.out(JSON.stringify(r))
           });
           const final = nextStage(loadTask(root, id), config2);
-          io.out(JSON.stringify({ id, done: true, stages: reports.length, next: final }));
           const last = reports.at(-1);
+          const paused = last?.outcome === "paused";
+          io.out(JSON.stringify({ id, done: true, stages: reports.length, next: final, ...paused ? { outcome: "paused", pause: final.pause } : {} }));
+          if (paused) return 75;
           return last && ["fail", "blocked"].includes(last.outcome) ? 1 : 0;
         } finally {
           releaseLock(root, id, runId);

@@ -8,11 +8,11 @@ import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
 import { checkDesign } from "./artifacts.js";
 import { applyPaths, gateConfig, runAllGates, runCommand, runGenerate, type GateResult } from "./gates.js";
-import { addWorktree, changeSet, detachWorktreeGit, removeDetached } from "./git.js";
+import { addWorktree, changeSet, detachWorktreeGit, removeDetached, repoInfo } from "./git.js";
 import { nextStage, roleFor, transition, type Event, type NextInfo, type Stage, type TaskState } from "./lifecycle.js";
 import { block, composePrompt, loadTemplate, section, type PromptStage } from "./prompts.js";
 import { runRole, type RunResult } from "./runners.js";
-import { changeFileHashes, changeFiles, changeFolder, planDigest, snapshotDigest } from "./snapshot.js";
+import { changeFileHashes, changeFiles, changeFolder, pathHashes, planDigest, snapshotDigest } from "./snapshot.js";
 import { decidedFeedback, planNodes, replaceNode, reviewDecisions } from "./plan-nodes.js";
 import { loadTask, saveTask, writeFileAtomic } from "./store.js";
 import { parseBlocked, parsePlanConflict, runDelegatedReview } from "./review.js";
@@ -26,6 +26,8 @@ export interface StageIo {
   env: NodeJS.ProcessEnv;
   /** Optional per-role timeout override in milliseconds. */
   timeoutMs?: number;
+  /** Override removal of the current verify copy for tests. Returns false if the copy remains. */
+  removeCopy?: (root: string, path: string) => boolean;
 }
 
 /** One emitted stage result with its evidence and successor decision. */
@@ -343,12 +345,10 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
   let task = loadTask(root, id);
   const config = workingConfig;
   const next = nextStage(task, config);
-  if (!next.stage) {
-    if (next.reason === "awaiting_plan_approval" && task.approval === "model") {
-      return (await runDelegatedReview(root, config, id, io)) as StageReport;
-    }
-    return undefined;
+  if (next.stage === "review" || (!next.stage && next.reason === "awaiting_plan_approval" && task.approval === "model")) {
+    return runDelegatedReview(root, config, id, io);
   }
+  if (!next.stage) return undefined;
   const stage = next.stage;
   /** Pair an outcome and its optional diagnostics with the next routing decision. */
   const report = (outcome: string, t: TaskState, reason?: string, details?: unknown): StageReport => ({
@@ -358,6 +358,13 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
     ...(details === undefined ? {} : { details }),
     next: nextStage(t, config),
   });
+  /** Record a provider limit without consuming an attempt and attach transient diagnostics to the report. */
+  const pauseOn = (r: RunResult, extra?: { cleanup_failed: string }): StageReport | undefined => {
+    if (!r.usageLimit) return undefined;
+    const { reset, runner } = r.usageLimit;
+    const paused = record(root, task, { kind: "pause", stage, ...r.usageLimit }, config, io);
+    return report("paused", paused, "usage_limit", { reset, runner, log: r.log, ...extra });
+  };
 
   // An approved plan must not change afterwards.
   if (task.tier !== "small" && task.planDigest && ["implement", "gates", "verify"].includes(stage)) {
@@ -372,6 +379,8 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const out = `.devflow/runs/${id}/facts.md`;
       const ctx = block("Living specs (read as needed)", livingSpecs(root));
       const r = await runModel(root, task, config, io, "explore", "explore", ctx, [out], [out]);
+      const paused = pauseOn(r);
+      if (paused) return paused;
       task = record(root, task, { kind: "complete", stage, outcome: r.ok ? "ok" : "fail" }, config, io);
       return report(r.ok ? "ok" : "fail", task, r.ok ? undefined : "run_failed", r);
     }
@@ -395,6 +404,8 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const r = request?.node
         ? await reviseNode(root, task, config, io, request.node, ctx)
         : await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
+      const paused = pauseOn(r);
+      if (paused) return paused;
       if (!r.ok) {
         task = record(root, task, { kind: "complete", stage, outcome: "fail" }, config, io);
         return report("fail", task, "run_failed", r);
@@ -416,6 +427,10 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const zone = task.zone?.length ? task.zone : small ? ["**"] : [];
       if (!zone.length) throw new DevflowError("no_zone", `Task ${id} has no impact zone; approve a design or set one with "devflow zone".`);
       const trusted = gateConfig(root, task.base, config).config;
+      if (task.base && !task.dirtyAtImplement && repoInfo(root)) {
+        const paths = changeSet(root, task.base).filter((path) => !path.startsWith(`openspec/changes/${id}/`));
+        task = record(root, task, { kind: "dirty_snapshot", paths: pathHashes(root, paths) }, config, io);
+      }
       const generate = trusted.build?.generate;
       const outputs = trusted.build?.outputs ?? [];
       // Generated outputs are writable, but only through the generate command: run it whenever the tests need
@@ -432,6 +447,8 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const bash = [config.test.command];
       if (generate) bash.push(generate);
       const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], { bash });
+      const paused = pauseOn(r);
+      if (paused) return paused;
       const answer = r.ok && r.log ? read(r.log) : "";
       const blocked = answer ? parseBlocked(answer) : undefined;
       if (blocked) {
@@ -470,7 +487,7 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
     }
 
     case "verify":
-      return runVerify(root, task, config, io, report);
+      return runVerify(root, task, config, io, report, pauseOn);
   }
 }
 
@@ -481,6 +498,7 @@ async function runVerify(
   workingConfig: Config,
   io: StageIo,
   report: (outcome: string, t: TaskState, reason?: string, details?: unknown) => StageReport,
+  pauseOn: (r: RunResult, extra?: { cleanup_failed: string }) => StageReport | undefined,
 ): Promise<StageReport> {
   const id = task.id;
   const { config } = gateConfig(root, task.base, workingConfig);
@@ -524,6 +542,7 @@ async function runVerify(
   let wt: { path: string; projectDir: string } | undefined;
   let r: RunResult | undefined;
   let failure: string | undefined;
+  let leftoverCopy: string | undefined;
   try {
     wt = addWorktree(root, task.base!);
     detachWorktreeGit(wt.path);
@@ -545,32 +564,39 @@ async function runVerify(
         ...(previous ? { previousVerdict: previous } : {}),
         bash: [config.test.command],
       });
-      const produced = join(wt.projectDir, ".devflow-verdict.md");
-      // Copy only a regular file: a link planted by the verifier must not make devflow read outside the copy.
-      if (existsSync(produced) && lstatSync(produced).isFile()) {
-        mkdirSync(dirname(verdictPath), { recursive: true });
-        copyFileSync(produced, verdictPath);
-      } else if (existsSync(produced)) {
-        failure = "unsafe_verdict";
-      }
-      if (!r.ok) {
-        // A verifier that answered with the verdict instead of writing the file still gave one.
-        const answered = !existsSync(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log
-          ? verdictFromAnswer(read(r.log))
-          : undefined;
-        if (answered) {
+      if (!r.usageLimit) {
+        const produced = join(wt.projectDir, ".devflow-verdict.md");
+        // Copy only a regular file: a link planted by the verifier must not make devflow read outside the copy.
+        if (existsSync(produced) && lstatSync(produced).isFile()) {
           mkdirSync(dirname(verdictPath), { recursive: true });
-          writeFileSync(verdictPath, answered);
-        } else {
-          failure = "verify_run_failed";
+          copyFileSync(produced, verdictPath);
+        } else if (existsSync(produced)) {
+          failure = "unsafe_verdict";
+        }
+        if (!r.ok) {
+          // A verifier that answered with the verdict instead of writing the file still gave one.
+          const answered = !existsSync(produced) && r.exitCode === 0 && !r.timedOut && r.missingOutputs.length === 1 && r.log
+            ? verdictFromAnswer(read(r.log))
+            : undefined;
+          if (answered) {
+            mkdirSync(dirname(verdictPath), { recursive: true });
+            writeFileSync(verdictPath, answered);
+          } else {
+            failure = "verify_run_failed";
+          }
         }
       }
     }
   } catch (e) {
     failure = e instanceof DevflowError ? e.reason : "verify_error";
   } finally {
-    if (wt && !removeDetached(root, wt.path)) failure = failure ?? "cleanup_failed";
+    if (wt && !(io.removeCopy ?? removeDetached)(root, wt.path)) {
+      leftoverCopy = wt.path;
+      failure = failure ?? "cleanup_failed";
+    }
   }
+
+  if (r?.usageLimit) return pauseOn(r, leftoverCopy ? { cleanup_failed: leftoverCopy } : undefined)!;
 
   const verdict = failure ? undefined : verdictOf(read(verdictPath));
   if (!verdict) {
@@ -588,7 +614,7 @@ async function runVerify(
   return report(verdict, t, undefined, { verdict: verdictPath, round });
 }
 
-/** Run stages until a human is needed, a stage fails, or the task is done.
+/** Run stages until a human is needed, a stage fails or pauses, or the task is done.
  * @param opts - Stop after one report or notify the caller after each report.
  * @returns The ordered reports from this invocation.
  */
@@ -600,7 +626,7 @@ export async function runLoop(root: string, config: Config, id: string, io: Stag
     reports.push(r);
     opts.onStage?.(r);
     if (opts.once) break;
-    if (r.outcome === "fail" || r.outcome === "blocked" || r.outcome === "human" || r.outcome === "stale") break;
+    if (["fail", "blocked", "human", "stale", "paused"].includes(r.outcome)) break;
     const delegatedApproval = r.next.reason === "awaiting_plan_approval" && loadTask(root, id).approval === "model";
     if (!r.next.stage && !delegatedApproval) break;
   }

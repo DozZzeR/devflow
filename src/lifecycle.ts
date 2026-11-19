@@ -42,7 +42,7 @@ const HistoryEntrySchema = z.object({
   /** Timestamp of the recorded decision. */
   at: z.string(),
   /** Event category used to interpret the optional history fields. */
-  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked"]),
+  kind: z.enum(["start", "complete", "approve", "resume", "tier", "escalate", "gates", "override", "base", "zone", "invalidate", "reject", "delegate", "review", "blocked", "pause", "dirty"]),
   /** Stage associated with the recorded event, when applicable. */
   stage: z.enum(STAGES).optional(),
   /** First gate that stopped a gate run. */
@@ -68,6 +68,15 @@ export const PLAN_CONFLICT_LIMIT = 2;
 
 /** Initial counts for consecutive gate failures, reworks and stale evidence. */
 export const COUNTERS_ZERO = { gatesFailedInARow: 0, reworks: 0, staleEvidence: 0 };
+
+// z.record discards "__proto__", which is a valid Git path.
+/** Preserve Git path keys, including __proto__, and validate each saved hash or deletion. */
+const DirtyPathsSchema = z.custom<Record<string, string | null>>((value) => {
+  if (value === null || typeof value !== "object") return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null)
+    && Object.values(value).every((hash) => hash === null || typeof hash === "string");
+});
 
 /** Validate the schema-2 record read from state.json before routing a task. */
 export const TaskStateSchema = z.strictObject({
@@ -106,6 +115,19 @@ export const TaskStateSchema = z.strictObject({
   base: z.string().optional(),
   /** Approved project-relative write globs. */
   zone: z.array(z.string()).optional(),
+  /** Provider-limit interruption that preserves the current status and attempt. */
+  pause: z.strictObject({
+    stage: z.enum([...STAGES, "review"]),
+    reason: z.literal("usage_limit"),
+    runner: z.string(),
+    at: z.string(),
+    reset: z.string().optional(),
+  }).optional(),
+  /** Initial content hashes of paths already changed when implementation first began. */
+  dirtyAtImplement: z.strictObject({
+    at: z.string(),
+    paths: DirtyPathsSchema,
+  }).optional(),
   /** Escalation and invalidation counts tracked separately from role attempts. */
   counters: z.strictObject({
     gatesFailedInARow: z.number().int().nonnegative(),
@@ -127,6 +149,8 @@ export type GateOutcome = "pass" | "fail" | "blocked";
 
 /** Discriminated input to the reducer, including human decisions and recorded execution results. */
 export type Event =
+  | { kind: "pause"; stage: Stage | "review"; runner: string; reset?: string }
+  | { kind: "dirty_snapshot"; paths: Record<string, string | null> }
   | { kind: "complete"; stage: Stage; outcome: string; override?: string; evidence?: string; byRun?: boolean }
   | { kind: "gates"; outcome: GateOutcome; gate?: string; reason?: string; results?: string; snapshot?: string }
   | { kind: "approve"; planDigest?: string; zone?: string[]; revision?: number; by?: "model" }
@@ -147,14 +171,16 @@ export interface NextInfo {
   status: TaskStatus;
   /** Complexity selecting the applicable route. */
   tier: Tier;
-  /** Next runnable stage, or null at a stop or invalid state. */
-  stage: Stage | null;
+  /** Next runnable stage, including a paused delegated review, or null at a stop. */
+  stage: Stage | "review" | null;
   /** Machine-readable explanation when routing stops or requires approval. */
   reason?: string;
   /** Configured model assignment for a model-driven stage. */
   role?: Role;
   /** One-based number the next role invocation would consume on completion. */
   attempt?: number;
+  /** Recorded subscription limit and the affected stage, when present. */
+  pause?: TaskState["pause"];
 }
 
 /** Fresh attempt counts used at task creation and on qualifying resets. */
@@ -229,6 +255,15 @@ export function roleFor(stage: Stage, tier: Tier, config: Config): Role | undefi
   }
 }
 
+/** Choose review, complex design or design in that order and require a supported read-only runner. */
+export function reviewRole(config: Config): Role {
+  const role = config.roles.review ?? config.roles.design_complex ?? config.roles.design;
+  if (role.runner !== "claude" && role.runner !== "codex") {
+    throw new DevflowError("review_runner_unsupported", "The review role must run on claude or codex (it needs a read-only run).");
+  }
+  return role;
+}
+
 /**
  * Combine the routing decision with role and attempt information for CLI and orchestration.
  * @returns The next stage and role, or a stop reason when no stage is runnable.
@@ -236,8 +271,12 @@ export function roleFor(stage: Stage, tier: Tier, config: Config): Role | undefi
 export function nextStage(task: TaskState, config: Config): NextInfo {
   const { stage, reason } = stageFor(task);
   const info: NextInfo = { id: task.id, status: task.status, tier: task.tier, stage };
+  if (task.pause) info.pause = task.pause;
   if (reason) info.reason = reason;
-  if (stage) {
+  if (task.status === "DESIGNED" && task.approval === "model" && task.pause?.stage === "review") {
+    info.stage = "review";
+    info.role = reviewRole(config);
+  } else if (stage) {
     const role = roleFor(stage, task.tier, config);
     if (role) info.role = role;
     if (stage !== "gates") info.attempt = task.attempts[stage] + 1;
@@ -257,6 +296,7 @@ const TIER_ORDER: Record<Tier, number> = { small: 0, medium: 1, complex: 2 };
 export function transition(task: TaskState, event: Event, config: Config, now: string): TaskState {
   const t: TaskState = structuredClone(task);
   t.updatedAt = now;
+  if (event.kind !== "pause") delete t.pause;
 
   /** Stop routing and record the reason exposed to the operator. */
   const toHuman = (reason: string) => {
@@ -306,6 +346,30 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
   };
 
   switch (event.kind) {
+    case "pause": {
+      const { stage, runner, reset } = event;
+      if (stage === "review") {
+        if (task.status !== "DESIGNED" || task.approval !== "model") {
+          throw new DevflowError("stage_not_next", `Review is not next for task ${task.id}.`);
+        }
+      } else {
+        checkNext(stage);
+      }
+      t.pause = { stage, runner, reason: "usage_limit", at: now, ...(reset === undefined ? {} : { reset }) };
+      t.history.push({
+        kind: "pause", at: now, reason: "usage_limit",
+        ...(stage === "review" ? { results: "review" } : { stage }),
+        ...(reset === undefined ? {} : { to: reset }),
+      });
+      return t;
+    }
+    case "dirty_snapshot": {
+      if (!t.dirtyAtImplement) {
+        t.dirtyAtImplement = { at: now, paths: { ...event.paths } };
+        t.history.push({ kind: "dirty", at: now, results: `${Object.keys(event.paths).length} paths` });
+      }
+      return t;
+    }
     case "complete": {
       const { stage, outcome } = event;
       checkNext(stage);

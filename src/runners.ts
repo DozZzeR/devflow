@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Config, Role } from "./config.js";
 import { DevflowError } from "./errors.js";
 import type { Scope } from "./hook.js";
+import { detectUsageLimit, type UsageLimit } from "./limits.js";
 import { openLog } from "./logs.js";
 import { API_KEY_VARS, buildChildEnv, launch } from "./proc.js";
 import { selfScript } from "./jobs.js";
@@ -68,6 +69,8 @@ export interface RunResult {
   apiKeyEnv: "stripped" | "kept";
   /** Location of the redacted process log. */
   log: string;
+  /** Classified provider limit that can pause the current stage. */
+  usageLimit?: UsageLimit;
   /** The timeout kill could not be confirmed; descendants may still be running. */
   killFailed?: boolean;
   /** Set when the role could not be launched at all (for example cli_not_found). */
@@ -285,8 +288,12 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
     log.close();
   }
   const missingOutputs = checkOutputs(workDir, req.expect, before);
+  const runner = req.role.runner;
+  const usageLimit = runner === "claude" || runner === "codex"
+    ? detectUsageLimit(runner, readFileSync(log.path, "utf8"), launched.exitCode)
+    : undefined;
   const result: RunResult = {
-    ok: launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
+    ok: !usageLimit && launched.exitCode === 0 && !launched.timedOut && missingOutputs.length === 0,
     role: req.roleName,
     runner: req.role.runner,
     model: req.role.model,
@@ -297,6 +304,7 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
     scope: inv.scope,
     apiKeyEnv,
     log: log.path,
+    ...(usageLimit ? { usageLimit } : {}),
   };
   if (launched.killFailed) result.killFailed = true;
   return result;

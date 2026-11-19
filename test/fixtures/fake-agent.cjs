@@ -33,7 +33,26 @@ process.stdin.on("end", () => {
     const role = (/You are the (\w+)/.exec(prompt) || [])[1] || "x";
     fs.writeFileSync(path.join(env.FAKE_PROMPT_DIR, `${role}-${Date.now()}.txt`), prompt);
   }
-  if (env.FAKE_FAIL_ROLE && prompt.includes(`You are the ${env.FAKE_FAIL_ROLE} role`)) process.exit(3);
+  const role = (/You are the (\w+)(?: \(small task\))? role/.exec(prompt) || [])[1];
+  if (role && role === env.FAKE_LIMIT_ROLE) {
+    switch (env.FAKE_LIMIT_OUTPUT) {
+      case "claude-usage":
+        console.log(JSON.stringify({ type: "result", is_error: true, api_error: "usage_limit_reached", result: "Usage limit reached, resets 5pm" }));
+        process.exit(0);
+      case "claude-429":
+        console.log(JSON.stringify({ type: "result", is_error: true, api_error_status: 429 }));
+        process.exit(0);
+      case "codex":
+        console.error("ERROR: You've hit your usage limit. Try again at 5:00 PM.");
+        process.exit(1);
+    }
+  }
+  if (role === "IMPLEMENT" && env.FAKE_IMPLEMENT_TOUCH) {
+    const split = env.FAKE_IMPLEMENT_TOUCH.indexOf("=");
+    if (split < 0) fs.rmSync(env.FAKE_IMPLEMENT_TOUCH, { force: true });
+    else write(env.FAKE_IMPLEMENT_TOUCH.slice(0, split), env.FAKE_IMPLEMENT_TOUCH.slice(split + 1));
+  }
+  if (env.FAKE_FAIL_ROLE && role === env.FAKE_FAIL_ROLE) process.exit(3);
 
   if (prompt.includes("You are the REVIEW role")) {
     console.log("reviewing the plan");

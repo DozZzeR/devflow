@@ -1,13 +1,29 @@
 /** @file Bind approvals and test evidence to the plan revision, Git base, configuration and changed content. */
 
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Config } from "./config.js";
 import { changeSet } from "./git.js";
 
 /** Hash text or file bytes with SHA-256 for deterministic evidence digests. */
 const sha = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** Hash file contents or link targets without following the final path component. */
+export function pathHashes(root: string, paths: string[]): Record<string, string | null> {
+  return Object.fromEntries(paths.map((path) => {
+    const absolute = join(root, path);
+    try {
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) return [path, `link:${sha(readlinkSync(absolute, { encoding: "buffer" }))}`];
+      if (stat.isFile()) return [path, `sha256:${sha(readFileSync(absolute))}`];
+    } catch (error) {
+      const { code } = error as NodeJS.ErrnoException;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+    return [path, null];
+  }));
+}
 
 /** Hash of the configuration the gates actually used (stable key order). */
 export function configHash(config: Config): string {

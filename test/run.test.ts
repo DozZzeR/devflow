@@ -2,10 +2,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "../src/config.js";
+import { removeDetached } from "../src/git.js";
+import { runNextStage } from "../src/stages.js";
 import { fakeAgentBin } from "./fake.js";
 import { gitProject, sh, write } from "./gitrepo.js";
 import { tempDir } from "./helpers.js";
@@ -19,7 +23,7 @@ function setup(extra: Record<string, string> = {}, prepare?: (root: string, cfg:
   const cfgPath = join(root, ".devflow", "config.json");
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   cfg.openspec = { cli: "off" };
-  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE", "FAKE_PLAN_CONFLICT", "FAKE_VERDICT_IN_ANSWER", "FAKE_BLOCKED"] } };
+  cfg.runners = { env: { pass: ["FAKE_VERDICT", "FAKE_VERIFY_EDIT", "FAKE_PROMPT_DIR", "FAKE_FAIL_ROLE", "FAKE_PLAN_CONFLICT", "FAKE_VERDICT_IN_ANSWER", "FAKE_BLOCKED", "FAKE_LIMIT_ROLE", "FAKE_LIMIT_OUTPUT", "FAKE_IMPLEMENT_TOUCH"] } };
   prepare?.(root, cfg);
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   sh(root, "git", ["add", "-A"]);
@@ -38,7 +42,7 @@ function setup(extra: Record<string, string> = {}, prepare?: (root: string, cfg:
   const state = (id: string) => JSON.parse(readFileSync(join(root, ".devflow", "runs", id, "state.json"), "utf8"));
   /** Decode the CLI's newline-delimited stage reports for ordered assertions. */
   const lines = (out: string) => out.split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
-  return { root, devflow, devflowWith, state, lines, prompts };
+  return { root, devflow, devflowWith, state, lines, prompts, env };
 }
 
 test("medium task: explore + design, stop for approval; approve binds plan; then implement, gates, verify, DONE", () => {
@@ -91,6 +95,176 @@ test("only the verify prompt receives the committed threat model", () => {
   assert.match(text("VERIFY"), /## Threat model and verification context\s+THREAT-MODEL-MARKER/);
   assert.doesNotMatch(text("EXPLORE"), /THREAT-MODEL-MARKER/);
   assert.doesNotMatch(text("DESIGN"), /THREAT-MODEL-MARKER/);
+});
+
+test("Implement hits the limit without spending an attempt or running generate", () => {
+  const { root, devflow, devflowWith, state, lines } = setup({}, (root, cfg) => {
+    cfg.build = { generate: "node gen.cjs", outputs: ["marker.txt"] };
+    write(root, "gen.cjs", 'require("node:fs").writeFileSync("marker.txt", "generated");');
+  });
+  assert.equal(devflow("start", "t1", "Add mul", "--tier", "small").code, 0);
+  const run = devflowWith({ FAKE_LIMIT_ROLE: "IMPLEMENT", FAKE_LIMIT_OUTPUT: "codex" }, "run", "t1", "--once");
+  assert.equal(run.code, 75, run.err);
+  const [report] = lines(run.out);
+  assert.equal(report.outcome, "paused");
+  assert.equal(report.reason, "usage_limit");
+  assert.equal(report.next.stage, "implement");
+  assert.equal(state("t1").attempts.implement, 0);
+  assert.equal(state("t1").status, "NEW");
+  assert.equal(existsSync(join(root, "marker.txt")), false);
+});
+
+test("Limited verify removes its worktree and retries the same round", () => {
+  const { root, devflow, devflowWith, state, lines } = setup();
+  assert.equal(devflow("start", "t1", "Add mul").code, 0);
+  assert.equal(devflow("run", "t1").code, 0);
+  assert.equal(devflow("approve", "t1").code, 0);
+  const run = devflowWith({ FAKE_LIMIT_ROLE: "VERIFY", FAKE_LIMIT_OUTPUT: "codex" }, "run", "t1");
+  assert.equal(lines(run.out).at(-2).outcome, "paused");
+  assert.equal(state("t1").history.some((h: { kind: string; stage?: string }) => h.kind === "complete" && h.stage === "verify"), false);
+  assert.equal(sh(root, "git", ["worktree", "list"]).trim().split(/\r?\n/).length, 1);
+  const retry = devflow("run", "t1");
+  assert.equal(lines(retry.out)[0].details.round, 1);
+  assert.equal(state("t1").status, "DONE");
+});
+
+/** Advance to verify and inject a cleanup failure, leaving the copy available until test teardown. */
+async function pauseWithLeftoverCopy(t: import("node:test").TestContext) {
+  const { root, devflow, state, env } = setup();
+  assert.equal(devflow("start", "t1", "Add mul").code, 0);
+  assert.equal(devflow("run", "t1").code, 0);
+  assert.equal(devflow("approve", "t1").code, 0);
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  const config = loadConfig(root);
+  const attempts = state("t1").attempts.verify;
+  const io = { now: () => new Date().toISOString(), env };
+  let copy: string | undefined;
+  t.after(() => {
+    if (copy) assert.equal(removeDetached(root, copy), true);
+  });
+  const report = await runNextStage(root, config, "t1", {
+    ...io,
+    env: { ...env, FAKE_LIMIT_ROLE: "VERIFY", FAKE_LIMIT_OUTPUT: "codex" },
+    removeCopy: (_root: string, path: string) => {
+      copy = path;
+      return false;
+    },
+  });
+  assert.ok(copy && existsSync(copy));
+  return { root, config, io, state, attempts, report, copy };
+}
+
+test("Verify copy cannot be removed during a pause and its path is only reported", async (t) => {
+  const { root, state, attempts, report, copy } = await pauseWithLeftoverCopy(t);
+  assert.equal(report?.outcome, "paused");
+  assert.equal(report.reason, "usage_limit");
+  assert.equal((report.details as { cleanup_failed?: string }).cleanup_failed, copy);
+  assert.equal(state("t1").attempts.verify, attempts);
+  assert.equal(state("t1").pause.stage, "verify");
+  const rawState = readFileSync(join(root, ".devflow", "runs", "t1", "state.json"), "utf8");
+  assert.ok(!rawState.includes(JSON.stringify(copy).slice(1, -1)));
+  assert.doesNotMatch(rawState, /"pendingCleanup"|"cleaned"/);
+});
+
+test("Next run does not retry the removal and verifies round one in a fresh copy", async (t) => {
+  const { root, config, io, report, copy } = await pauseWithLeftoverCopy(t);
+  assert.equal(report?.outcome, "paused");
+  const removed: string[] = [];
+  const retry = await runNextStage(root, config, "t1", {
+    ...io,
+    removeCopy: (repo, path) => {
+      removed.push(path);
+      return removeDetached(repo, path);
+    },
+  });
+  assert.equal(removed.length, 1);
+  assert.notEqual(removed[0], copy);
+  assert.ok(existsSync(copy));
+  assert.equal(retry?.outcome, "pass");
+  assert.equal((retry.details as { round: number }).round, 1);
+});
+
+test("Stops on a pause and the next run retries design at the same attempt", () => {
+  const { devflow, devflowWith, lines, state } = setup();
+  assert.equal(devflow("start", "t1", "Add mul").code, 0);
+  const first = devflowWith({ FAKE_LIMIT_ROLE: "DESIGN", FAKE_LIMIT_OUTPUT: "codex" }, "run", "t1");
+  assert.equal(first.code, 75, first.err);
+  const reports = lines(first.out);
+  assert.deepEqual(reports.slice(0, -1).map((r) => [r.stage, r.outcome]), [["explore", "ok"], ["design", "paused"]]);
+  const final = reports.at(-1);
+  assert.equal(final.outcome, "paused");
+  assert.equal(final.next.stage, "design");
+  assert.equal(final.pause.reset, "5:00 PM");
+  assert.deepEqual(final.pause, final.next.pause);
+  const attemptBeforePause = reports[0].next.attempt;
+  assert.equal(attemptBeforePause, 1);
+  assert.equal(final.next.attempt, attemptBeforePause);
+  const retry = devflow("run", "t1");
+  assert.equal(retry.code, 0, retry.err);
+  const [design] = lines(retry.out);
+  assert.equal(design.stage, "design");
+  assert.equal(design.outcome, "ok");
+  // A successful design records exactly one attempt and the loop stops for approval.
+  assert.equal(state("t1").attempts.design, attemptBeforePause);
+  assert.equal(design.next.pause, undefined);
+});
+
+/** Compute the prefixed SHA-256 value expected in a dirty-path snapshot. */
+const contentHash = (content: string) => "sha256:" + createHash("sha256").update(content).digest("hex");
+
+test("Human edit before implement is captured, including a deleted file", () => {
+  const { root, devflow, state } = setup({}, (root) => {
+    write(root, "README.md", "base");
+    write(root, "docs/old.md", "old");
+  });
+  assert.equal(devflow("start", "t1", "Add mul", "--tier", "small").code, 0);
+  write(root, "README.md", "human edit");
+  unlinkSync(join(root, "docs/old.md"));
+  write(root, "openspec/changes/t1/tasks.md", "task artifacts");
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  assert.deepEqual(state("t1").dirtyAtImplement.paths, { "README.md": contentHash("human edit"), "docs/old.md": null });
+});
+
+test("Retry keeps the first snapshot after a failed implement", () => {
+  const { root, devflow, devflowWith, state } = setup();
+  assert.equal(devflow("start", "t1", "Add mul", "--tier", "small").code, 0);
+  write(root, "README.md", "human edit");
+  const failed = devflowWith({ FAKE_FAIL_ROLE: "IMPLEMENT", FAKE_IMPLEMENT_TOUCH: "README.md=role edit" }, "run", "t1", "--once");
+  assert.equal(failed.code, 1);
+  assert.equal(readFileSync(join(root, "README.md"), "utf8"), "role edit");
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  assert.equal(state("t1").dirtyAtImplement.paths["README.md"], contentHash("human edit"));
+});
+
+test("Pause keeps the snapshot when implement retries", () => {
+  const { root, devflow, devflowWith, state } = setup();
+  assert.equal(devflow("start", "t1", "Add mul", "--tier", "small").code, 0);
+  write(root, "README.md", "human edit");
+  assert.equal(devflowWith({ FAKE_LIMIT_ROLE: "IMPLEMENT", FAKE_LIMIT_OUTPUT: "codex" }, "run", "t1", "--once").code, 75);
+  write(root, "README.md", "later edit");
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  const task = state("t1");
+  assert.equal(task.dirtyAtImplement.paths["README.md"], contentHash("human edit"));
+  assert.equal(task.history.filter((h: { kind: string }) => h.kind === "dirty").length, 1);
+});
+
+test("Snapshot covers exempted paths and invalidates verify when they change", () => {
+  const { root, devflow, state, lines } = setup();
+  assert.equal(devflow("start", "t1", "Add mul").code, 0);
+  assert.equal(devflow("run", "t1").code, 0);
+  assert.equal(devflow("approve", "t1").code, 0);
+  write(root, "README.md", "human edit");
+  assert.equal(devflow("run", "t1", "--once").code, 0);
+  const [gates] = lines(devflow("run", "t1", "--once").out);
+  assert.equal(gates.outcome, "pass");
+  assert.deepEqual(gates.details.results[0].warnings, ["preexisting_change:README.md"]);
+
+  write(root, "README.md", "edit after gates");
+  const [verify] = lines(devflow("run", "t1", "--once").out);
+  assert.equal(verify.outcome, "snapshot_changed");
+  assert.equal(verify.next.stage, "gates");
+  assert.equal(state("t1").attempts.verify, 0);
 });
 
 test("--once runs exactly one stage", () => {
