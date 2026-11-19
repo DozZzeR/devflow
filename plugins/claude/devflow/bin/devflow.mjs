@@ -20813,7 +20813,14 @@ function transition(task, event, config2, now) {
     const to = from === "small" ? "medium" : "complex";
     applyTierChange(t, to);
     t.attempts = { ...ZERO_ATTEMPTS };
-    t.history.push({ at: now, kind: "escalate", from, to, reason });
+    let results;
+    if (from === "medium" && to === "complex") {
+      t.planRevision = (t.planRevision ?? 1) + 1;
+      delete t.planDigest;
+      delete t.gatesSnapshot;
+      results = `revision ${t.planRevision}`;
+    }
+    t.history.push({ at: now, kind: "escalate", from, to, reason, ...results ? { results } : {} });
   };
   const applyGates = (outcome, gate, reason, snapshot2) => {
     if (outcome !== "pass") delete t.gatesSnapshot;
@@ -40864,12 +40871,17 @@ function verificationContext(root, base, changes) {
 // src/stages.ts
 var runsDir2 = (root, id) => join16(root, DEVFLOW_DIR, "runs", id);
 var read = (p) => existsSync13(p) ? readFileSync14(p, "utf8") : "";
-function record2(root, task, event, config2, io) {
+function record2(root, task, event, config2, io, evidence) {
   const current = loadTask(root, task.id);
   if (current.updatedAt !== task.updatedAt) {
     throw new DevflowError("state_changed", `Task ${task.id} changed while the stage was running; result not recorded.`);
   }
   const next = transition(current, event, config2, io.now());
+  const escalation = next.history.at(-1);
+  if (evidence && escalation?.kind === "escalate" && /^revision \d+$/.test(escalation.results ?? "")) {
+    const trigger = next.history.at(-2);
+    writeFileAtomic(escalationEvidencePath(root, task.id, next.history.length - 1, trigger.stage), evidence);
+  }
   saveTask(root, next);
   return next;
 }
@@ -40937,8 +40949,11 @@ async function runGatesStage(root, task, workingConfig, io) {
   } else {
     event = { kind: "gates", outcome: last.outcome, gate: last.name, results: summary2, ...last.reason ? { reason: last.reason } : {} };
   }
-  const recorded = record2(root, task, event, config2, io);
-  saveGatesFailure(root, task.id, last.outcome === "pass" ? void 0 : results);
+  const feedback = last.outcome === "pass" ? "" : formatGatesFailure(results);
+  const recorded = record2(root, task, event, config2, io, feedback);
+  const failurePath = join16(runsDir2(root, task.id), GATES_FAILURE);
+  if (feedback) writeFileSync7(failurePath, feedback);
+  else rmSync6(failurePath, { force: true });
   return { task: recorded, results, skipped, configSource: source };
 }
 var GATES_FAILURE = "gates-failure.md";
@@ -40948,12 +40963,7 @@ function tail2(text2, lines) {
   const all = text2.split(/\r?\n/);
   return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
 }
-function saveGatesFailure(root, id, results) {
-  const path = join16(runsDir2(root, id), GATES_FAILURE);
-  if (!results) {
-    rmSync6(path, { force: true });
-    return;
-  }
+function formatGatesFailure(results) {
   const parts = results.filter((r) => r.outcome !== "pass").map((r) => {
     const { log, logs, ...rest } = r.details ?? {};
     const files = [log, ...Array.isArray(logs) ? logs : []].filter((l) => typeof l === "string");
@@ -40964,7 +40974,22 @@ Log tail:
 ${tail2(read(files[files.length - 1]), LOG_TAIL_LINES)}` : "";
     return `Gate ${r.name}: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}${extra}${logText}`;
   });
-  writeFileSync7(path, parts.join("\n\n") + "\n");
+  return parts.join("\n\n") + "\n";
+}
+function escalationEvidencePath(root, id, index, stage) {
+  return join16(runsDir2(root, id), `escalation-${index}-${stage}.md`);
+}
+function escalationFeedback(root, task, escalation) {
+  const index = task.history.indexOf(escalation);
+  const trigger = task.history[index - 1];
+  if (!trigger?.stage || !trigger.outcome) return "";
+  const reason = trigger.reason ? ` (${trigger.reason})` : "";
+  const gate = trigger.gate ? ` [${trigger.gate}]` : "";
+  const summary2 = trigger.kind === "gates" && trigger.results ? `
+${trigger.results}` : "";
+  const evidence = trigger.kind === "gates" || trigger.kind === "complete" && trigger.results === "run" ? read(escalationEvidencePath(root, task.id, index, trigger.stage)) : "";
+  const evidenceHeading = trigger.stage === "verify" ? "Prior review round " + task.history.slice(0, index).filter((h) => h.kind === "complete" && h.stage === "verify").length + " (the latest revision request determines scope)" : "Triggering gate evidence";
+  return block("Triggering stage outcome", `${trigger.stage}: ${trigger.outcome}${gate}${reason}${summary2}`) + block(evidenceHeading, evidence);
 }
 function saveGenerateFailure(root, id, command, exitCode, timedOut, log) {
   const outcome = timedOut ? "timed out" : `exit ${exitCode}`;
@@ -41134,13 +41159,13 @@ async function runNextStage(root, workingConfig, id, io) {
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
       const latest = task.history.findLast((h) => h.kind === "reject" || h.kind === "tier" || h.kind === "escalate");
-      const request = latest?.kind === "reject" ? latest : void 0;
-      const rejections = request?.reason ?? "";
-      const ctx = block("Exploration notes", read(join16(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Latest revision request (binding scope)", rejections) + (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task, true) : "");
-      const revision = rejections.length > 0;
+      const request = latest?.kind === "reject" || latest?.kind === "escalate" && /^revision \d+$/.test(latest.results ?? "") ? latest : void 0;
+      const revision = request !== void 0;
+      const revisionRequest = request?.kind === "escalate" ? `Automatic escalation ${request.from} \u2192 ${request.to} (${request.reason}): Revise the approved plan to address the triggering evidence below.` : request?.reason ?? "";
+      const ctx = block("Exploration notes", read(join16(runsDir2(root, id), "facts.md"))) + block("Living specs (read as needed)", livingSpecs(root)) + block("Latest revision request (binding scope)", revisionRequest) + (revision ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "") + (request?.kind === "escalate" ? escalationFeedback(root, task, request) : revision ? reworkFeedback(root, task, true) : "");
       const filesBefore = revision ? planDigest(root, id) : "";
       const required2 = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
-      const r = request?.node ? await reviseNode(root, task, config2, io, request.node, ctx) : await runModel(root, task, config2, io, "design", "design", ctx, [`${folder}/**`], required2);
+      const r = request?.kind === "reject" && request.node ? await reviseNode(root, task, config2, io, request.node, ctx) : await runModel(root, task, config2, io, "design", "design", ctx, [`${folder}/**`], required2);
       const paused = pauseOn(r);
       if (paused) return paused;
       if (!r.ok) {
@@ -41301,7 +41326,8 @@ async function runVerify(root, task, workingConfig, io, report, pauseOn) {
     }
   }
   if (r?.usageLimit) return pauseOn(r, leftoverCopy ? { cleanup_failed: leftoverCopy } : void 0);
-  const verdict = failure2 ? void 0 : verdictOf(read(verdictPath));
+  const verdictText = failure2 ? "" : read(verdictPath);
+  const verdict = verdictOf(verdictText);
   if (!verdict) {
     const t2 = record2(root, task, { kind: "complete", stage: "verify", outcome: "human" }, workingConfig, io);
     return report("human", t2, failure2 ?? "unreadable_verdict", r);
@@ -41310,8 +41336,8 @@ async function runVerify(root, task, workingConfig, io, report, pauseOn) {
     const t2 = record2(root, task, { kind: "invalidate", to: "gates", reason: "snapshot_changed" }, workingConfig, io);
     return { stage: "invalidate", outcome: "snapshot_changed", next: nextStage(t2, workingConfig) };
   }
-  const event = verdict === "pass" ? { kind: "complete", stage: "verify", outcome: "pass", evidence: snap } : { kind: "complete", stage: "verify", outcome: verdict };
-  const t = record2(root, task, event, workingConfig, io);
+  const event = verdict === "pass" ? { kind: "complete", stage: "verify", outcome: "pass", evidence: snap } : { kind: "complete", stage: "verify", outcome: verdict, byRun: true };
+  const t = record2(root, task, event, workingConfig, io, verdict === "rework" ? verdictText : void 0);
   return report(verdict, t, void 0, { verdict: verdictPath, round });
 }
 async function runLoop(root, config2, id, io, opts = {}) {

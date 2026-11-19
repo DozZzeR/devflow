@@ -209,7 +209,10 @@ function readyToImplement(tier: Tier): TaskStatus {
   return tier === "small" ? "NEW" : "PLAN_APPROVED";
 }
 
-/** Map status and tier to a runnable stage or an explicit stop reason. */
+/**
+ * Map status and tier to a runnable stage or an explicit stop reason.
+ * A medium task escalated to complex returns to EXPLORED for design and needs approval at DESIGNED.
+ */
 function stageFor(task: TaskState): { stage: Stage | null; reason?: string } {
   if (task.status === "DONE") return { stage: null, reason: "done" };
   if (task.status === "HUMAN") return { stage: null, reason: task.humanReason ?? "human" };
@@ -308,7 +311,10 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     if (t.attempts.implement >= config.limits.implement) toHuman("limit_reached");
     else t.status = readyToImplement(t.tier);
   };
-  /** Automatic escalation by one tier; complex goes to a human instead. The working tree is never touched. */
+  /**
+   * Route a gate or rework escalation to the next tier, or to a human at complex.
+   * Medium to complex starts one plan revision here, so design retries reuse it.
+   */
   const autoEscalate = (reason: string) => {
     if (t.tier === "complex") {
       toHuman(reason);
@@ -318,7 +324,14 @@ export function transition(task: TaskState, event: Event, config: Config, now: s
     const to: Tier = from === "small" ? "medium" : "complex";
     applyTierChange(t, to);
     t.attempts = { ...ZERO_ATTEMPTS };
-    t.history.push({ at: now, kind: "escalate", from, to, reason });
+    let results: string | undefined;
+    if (from === "medium" && to === "complex") {
+      t.planRevision = (t.planRevision ?? 1) + 1;
+      delete t.planDigest;
+      delete t.gatesSnapshot;
+      results = `revision ${t.planRevision}`;
+    }
+    t.history.push({ at: now, kind: "escalate", from, to, reason, ...(results ? { results } : {}) });
   };
   /** Apply a gates result once the stage order has been checked. */
   const applyGates = (outcome: GateOutcome, gate: string | undefined, reason: string | undefined, snapshot?: string) => {

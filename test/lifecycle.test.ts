@@ -226,6 +226,8 @@ test("gates: repeated failures escalate before limits; files are not touched (ti
   assert.equal(nextStage(t, c).stage, "explore");
   const esc = t.history.at(-1)!;
   assert.deepEqual([esc.kind, esc.reason], ["escalate", "gates_failed_repeatedly"]);
+  assert.equal(t.planRevision, task("small").planRevision);
+  assert.equal(esc.results, undefined);
   assert.deepEqual([t.counters.gatesFailedInARow, t.attempts.implement], [0, 0]);
 });
 
@@ -243,13 +245,38 @@ test("gates pass resets the failure counter", () => {
   assert.equal(nextStage(t, cfg).stage, "verify");
 });
 
-test("second rework on medium escalates to complex", () => {
+test("second rework on medium starts one plan revision and invalidates the old approval", () => {
   const c = config({ limits: { verify: 5 } });
-  const toVerify = [ok("implement"), ok("gates")];
-  const t = play(task("medium"), c, ok("explore"), ok("design"), { kind: "approve" }, ...toVerify, verify("rework"), ...toVerify, verify("rework"));
+  const approved = { ...task("medium"), status: "PLAN_APPROVED" as const, planRevision: 4, planDigest: "approved" };
+  const gatePass = { kind: "gates", outcome: "pass", snapshot: "snapshot" } as const;
+  const t = play(approved, c, ok("implement"), gatePass, verify("rework"), ok("implement"), gatePass, verify("rework"));
   assert.equal(t.tier, "complex");
-  assert.equal(t.history.at(-1)!.reason, "rework_repeated");
+  assert.equal(t.status, "EXPLORED");
+  assert.equal(t.planRevision, 5);
+  assert.equal(t.planDigest, undefined);
+  assert.equal(t.gatesSnapshot, undefined);
+  assert.deepEqual(t.history.filter(h => h.kind === "escalate"), [
+    { at: NOW, kind: "escalate", from: "medium", to: "complex", reason: "rework_repeated", results: "revision 5" },
+  ]);
   assert.equal(nextStage(t, c).stage, "design");
+  const failed = play(t, c, fail("design"));
+  assert.equal(failed.planRevision, 5);
+  assert.equal(failed.status, "EXPLORED");
+  const redesigned = play(failed, c, ok("design"));
+  assert.equal(redesigned.planRevision, 5);
+  assert.equal(redesigned.status, "DESIGNED");
+  rejects(() => transition(redesigned, { kind: "approve", revision: 4 }, c, NOW), "plan_moved");
+});
+
+test("zone violations and repeated gate failures start a medium task's next revision", () => {
+  const c = config({ limits: { escalate_after: 2 } });
+  const approved = { ...task("medium"), status: "PLAN_APPROVED" as const, planRevision: 2, planDigest: "approved" };
+  const zone = play(approved, c, ok("implement"), { kind: "gates", outcome: "fail", gate: "zone", reason: "outside_zone" });
+  const repeated = play(approved, c, ok("implement"), fail("gates"), ok("implement"), fail("gates"));
+  for (const [t, reason] of [[zone, "zone_violation"], [repeated, "gates_failed_repeatedly"]] as const) {
+    assert.deepEqual([t.tier, t.status, t.planRevision], ["complex", "EXPLORED", 3]);
+    assert.deepEqual([t.history.at(-1)?.reason, t.history.at(-1)?.results], [reason, "revision 3"]);
+  }
 });
 
 test("manual gates ok needs an override and is recorded as such", () => {

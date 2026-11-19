@@ -624,6 +624,132 @@ test("a rejected plan goes back to design as a new revision; unchanged files are
   write(root, "openspec/changes/t8/tasks.md", "- [ ] 1.1 Changed by hand\n");
 });
 
+/** Approve revision 4 of a medium task whose fake verifier always asks for rework. */
+function approvedReworkPlan() {
+  const fixture = setup({ FAKE_VERDICT: "REWORK\n\nSecond review: cover signed operands." });
+  const { root, devflow, state } = fixture;
+  const id = "escalated";
+  assert.equal(devflow("start", id, "Add mul", "--tier", "medium").code, 0);
+  for (let revision = 1; revision <= 4; revision++) {
+    const result = devflow("run", id);
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.equal(state(id).planRevision ?? 1, revision);
+    if (revision < 4) assert.equal(devflow("approve", id, "--reject", "Cover negative numbers").code, 0);
+  }
+  // Let the fake designer refresh the root files while retaining the exact same delta.
+  for (const file of ["proposal.md", "design.md", "tasks.md"]) {
+    const path = join(root, "openspec", "changes", id, file);
+    writeFileSync(path, readFileSync(path, "utf8") + "\n");
+  }
+  assert.equal(devflow("approve", id).code, 0);
+  return { ...fixture, id };
+}
+
+/** Record one fake rework round, leaving the next round to the caller. */
+function firstRework({ devflowWith, id, lines }: ReturnType<typeof approvedReworkPlan>) {
+  for (const stage of ["implement", "gates", "verify"]) {
+    const result = devflowWith({ FAKE_VERDICT: "REWORK\n\nFirst review: cover zero." }, "run", id, "--once");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.equal(lines(result.out)[0]?.stage, stage);
+  }
+}
+
+/** Check the latest saved designer prompt for the escalation request and its evidence. */
+function assertEscalationPrompt(prompts: string) {
+  const last = readdirSync(prompts).filter(f => f.startsWith("DESIGN-")).sort().at(-1)!;
+  const prompt = readFileSync(join(prompts, last), "utf8");
+  assert.match(prompt, /Automatic escalation medium → complex \(rework_repeated\)/);
+  assert.match(prompt, /## Latest revision request \(binding scope\)/);
+  assert.match(prompt, /Current plan files \(revise them\)/);
+  for (const file of ["proposal.md", "design.md", "tasks.md", "specs/math/spec.md"]) {
+    assert.ok(prompt.includes(`## openspec/changes/escalated/${file}\n`), file);
+  }
+  assert.match(prompt, /VERDICT: REWORK\s+Second review: cover signed operands\./);
+  assert.doesNotMatch(prompt, /First review: cover zero/);
+}
+
+test("an escalated redesign retains its delta and awaits approval of revision 5", () => {
+  const fixture = approvedReworkPlan();
+  const { root, id, devflow, state, lines, prompts } = fixture;
+  const delta = join(root, "openspec", "changes", id, "specs", "math", "spec.md");
+  const before = createHash("sha256").update(readFileSync(delta)).digest("hex");
+  firstRework(fixture);
+  const result = devflow("run", id);
+  const reports = lines(result.out);
+  const design = reports.find(r => r.stage === "design");
+  assert.equal(design?.outcome, "ok", JSON.stringify(design ?? reports));
+  assert.doesNotMatch(result.out, /stale_delta/);
+  assert.equal(result.code, 0, result.out + result.err);
+  assert.equal(design.details.revision, 5);
+  const current = state(id);
+  assert.deepEqual([current.tier, current.planRevision, current.status], ["complex", 5, "DESIGNED"]);
+  assert.deepEqual(current.history.filter((h: { stage?: string }) => h.stage === "verify").map(
+    (h: { outcome: string }) => h.outcome
+  ), ["rework", "rework"]);
+  assert.equal(reports.at(-1).next.reason, "awaiting_plan_approval");
+  assert.deepEqual(current.history.filter((h: { kind: string }) => h.kind === "escalate").map(
+    (h: { reason: string; results: string }) => [h.reason, h.results]
+  ), [["rework_repeated", "revision 5"]]);
+  assert.equal(createHash("sha256").update(readFileSync(delta)).digest("hex"), before);
+  assertEscalationPrompt(prompts);
+});
+
+test("retrying a failed escalated design keeps revision 5 and its escalation context", () => {
+  const fixture = approvedReworkPlan();
+  const { id, devflow, devflowWith, state, lines, prompts } = fixture;
+  firstRework(fixture);
+  const failed = devflowWith({ FAKE_FAIL_ROLE: "DESIGN" }, "run", id);
+  const design = lines(failed.out).find(r => r.stage === "design");
+  assert.deepEqual([design?.outcome, design?.reason], ["fail", "run_failed"], failed.out + failed.err);
+  assert.deepEqual([state(id).status, state(id).planRevision], ["EXPLORED", 5]);
+  const retry = devflow("run", id);
+  const report = lines(retry.out).find(r => r.stage === "design");
+  assert.deepEqual([report?.outcome, report?.details.revision], ["ok", 5], retry.out + retry.err);
+  assert.deepEqual([state(id).status, state(id).planRevision], ["DESIGNED", 5]);
+  assertEscalationPrompt(prompts);
+});
+
+test("CLI verify rework gives redesign its recorded reason without the previous verdict", () => {
+  const fixture = approvedReworkPlan();
+  const { id, devflow, state, prompts } = fixture;
+  firstRework(fixture);
+  for (const stage of ["implement", "gates"]) {
+    const result = devflow("run", id, "--once");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.match(result.out, new RegExp(`"stage":"${stage}"`));
+  }
+  const rework = devflow("complete", id, "verify", "rework", "--override", "Manual review needs signed operands");
+  assert.equal(rework.code, 0, rework.out + rework.err);
+  const result = devflow("run", id);
+  assert.equal(result.code, 0, result.out + result.err);
+  assert.deepEqual([state(id).status, state(id).planRevision], ["DESIGNED", 5]);
+  const last = readdirSync(prompts).filter(f => f.startsWith("DESIGN-")).sort().at(-1)!;
+  const prompt = readFileSync(join(prompts, last), "utf8");
+  assert.match(prompt, /verify: rework \(Manual review needs signed operands\)/);
+  assert.doesNotMatch(prompt, /First review: cover zero|VERDICT:/);
+});
+
+test("CLI gate failures before verify give redesign the triggering outcome and reason", () => {
+  const { root, id, devflow, state, lines, prompts } = approvedReworkPlan();
+  for (const reason of ["First manual failure", "Second manual failure"]) {
+    assert.equal(devflow("complete", id, "implement", "ok").code, 0);
+    const failure = devflow("complete", id, "gates", "fail", "--override", reason);
+    assert.equal(failure.code, 0, failure.out + failure.err);
+  }
+  assert.deepEqual([state(id).status, state(id).planRevision], ["EXPLORED", 5]);
+  writeFileSync(join(root, ".devflow", "runs", id, "gates-failure.md"), "Unrelated old gate report");
+  const result = devflow("run", id);
+  assert.equal(result.code, 0, result.out + result.err);
+  const reports = lines(result.out);
+  assert.equal(reports.find(r => r.stage === "design")?.outcome, "ok");
+  assert.equal(reports.at(-1).next.reason, "awaiting_plan_approval");
+  const last = readdirSync(prompts).filter(f => f.startsWith("DESIGN-")).sort().at(-1)!;
+  const prompt = readFileSync(join(prompts, last), "utf8");
+  assert.match(prompt, /gates_failed_repeatedly/);
+  assert.match(prompt, /gates: fail \(Second manual failure\)/);
+  assert.doesNotMatch(prompt, /First manual failure|Unrelated old gate report|VERDICT:/);
+});
+
 test("a role whose CLI cannot be launched is a failed stage, not a crash", () => {
   const { root, devflow, lines } = setup();
   const cfgPath = join(root, ".devflow", "config.json");

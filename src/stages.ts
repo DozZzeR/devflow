@@ -9,7 +9,7 @@ import { DevflowError } from "./errors.js";
 import { checkDesign } from "./artifacts.js";
 import { applyPaths, gateConfig, runAllGates, runCommand, runGenerate, type GateResult } from "./gates.js";
 import { addWorktree, changeSet, detachWorktreeGit, removeDetached, repoInfo } from "./git.js";
-import { nextStage, roleFor, transition, type Event, type NextInfo, type Stage, type TaskState } from "./lifecycle.js";
+import { nextStage, roleFor, transition, type Event, type HistoryEntry, type NextInfo, type Stage, type TaskState } from "./lifecycle.js";
 import { block, composePrompt, loadTemplate, section, type PromptStage } from "./prompts.js";
 import { runRole, type RunResult } from "./runners.js";
 import { changeFileHashes, changeFiles, changeFolder, pathHashes, planDigest, snapshotDigest } from "./snapshot.js";
@@ -51,14 +51,20 @@ const read = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
 /**
  * Re-read the task, reject a changed timestamp and persist a validated lifecycle transition.
+ * For an escalation revision, save the triggering runner's evidence before publishing the transition.
  * @throws DevflowError when another update changed the task timestamp before this result was recorded.
  */
-function record(root: string, task: TaskState, event: Event, config: Config, io: StageIo): TaskState {
+function record(root: string, task: TaskState, event: Event, config: Config, io: StageIo, evidence?: string): TaskState {
   const current = loadTask(root, task.id);
   if (current.updatedAt !== task.updatedAt) {
     throw new DevflowError("state_changed", `Task ${task.id} changed while the stage was running; result not recorded.`);
   }
   const next = transition(current, event, config, io.now());
+  const escalation = next.history.at(-1);
+  if (evidence && escalation?.kind === "escalate" && /^revision \d+$/.test(escalation.results ?? "")) {
+    const trigger = next.history.at(-2)!;
+    writeFileAtomic(escalationEvidencePath(root, task.id, next.history.length - 1, trigger.stage), evidence);
+  }
   saveTask(root, next);
   return next;
 }
@@ -150,8 +156,11 @@ export async function runGatesStage(root: string, task: TaskState, workingConfig
   } else {
     event = { kind: "gates", outcome: last.outcome, gate: last.name, results: summary, ...(last.reason ? { reason: last.reason } : {}) };
   }
-  const recorded = record(root, task, event, config, io);
-  saveGatesFailure(root, task.id, last.outcome === "pass" ? undefined : results);
+  const feedback = last.outcome === "pass" ? "" : formatGatesFailure(results);
+  const recorded = record(root, task, event, config, io, feedback);
+  const failurePath = join(runsDir(root, task.id), GATES_FAILURE);
+  if (feedback) writeFileSync(failurePath, feedback);
+  else rmSync(failurePath, { force: true });
   return { task: recorded, results, skipped, configSource: source };
 }
 
@@ -168,13 +177,8 @@ function tail(text: string, lines: number): string {
   return (all.length > lines ? ["[...]", ...all.slice(-lines)] : all).join("\n").trim();
 }
 
-/** Keep what the implementer needs to fix a gate failure; a pass clears it. */
-function saveGatesFailure(root: string, id: string, results: GateResult[] | undefined): void {
-  const path = join(runsDir(root, id), GATES_FAILURE);
-  if (!results) {
-    rmSync(path, { force: true });
-    return;
-  }
+/** Render failed gates and their bounded command evidence for the next attempt. */
+function formatGatesFailure(results: GateResult[]): string {
   const parts = results
     .filter((r) => r.outcome !== "pass")
     .map((r) => {
@@ -184,7 +188,31 @@ function saveGatesFailure(root: string, id: string, results: GateResult[] | unde
       const logText = files.length ? `\nLog tail:\n${tail(read(files[files.length - 1]!), LOG_TAIL_LINES)}` : "";
       return `Gate ${r.name}: ${r.outcome}${r.reason ? ` (${r.reason})` : ""}${extra}${logText}`;
     });
-  writeFileSync(path, parts.join("\n\n") + "\n");
+  return parts.join("\n\n") + "\n";
+}
+
+/** Resolve the runner evidence saved for a specific escalation history index and triggering stage. */
+function escalationEvidencePath(root: string, id: string, index: number, stage: Stage | undefined): string {
+  return join(runsDir(root, id), `escalation-${index}-${stage}.md`);
+}
+
+/** Show the recorded outcome that caused the escalation and any evidence saved by its runner. */
+function escalationFeedback(root: string, task: TaskState, escalation: HistoryEntry): string {
+  const index = task.history.indexOf(escalation);
+  const trigger = task.history[index - 1];
+  if (!trigger?.stage || !trigger.outcome) return "";
+  const reason = trigger.reason ? ` (${trigger.reason})` : "";
+  const gate = trigger.gate ? ` [${trigger.gate}]` : "";
+  const summary = trigger.kind === "gates" && trigger.results ? `\n${trigger.results}` : "";
+  const evidence = trigger.kind === "gates" || (trigger.kind === "complete" && trigger.results === "run")
+    ? read(escalationEvidencePath(root, task.id, index, trigger.stage))
+    : "";
+  const evidenceHeading = trigger.stage === "verify"
+    ? "Prior review round " + task.history.slice(0, index).filter(h => h.kind === "complete" && h.stage === "verify").length +
+      " (the latest revision request determines scope)"
+    : "Triggering gate evidence";
+  return block("Triggering stage outcome", `${trigger.stage}: ${trigger.outcome}${gate}${reason}${summary}`) +
+    block(evidenceHeading, evidence);
 }
 
 /** Save generation failure details and a bounded log tail for the next implementer. */
@@ -389,19 +417,22 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const before = changeFileHashes(root, id);
       const folder = `openspec/changes/${id}`;
       const latest = task.history.findLast(h => h.kind === "reject" || h.kind === "tier" || h.kind === "escalate");
-      const request = latest?.kind === "reject" ? latest : undefined;
-      const rejections = request?.reason ?? "";
+      const request = latest?.kind === "reject" || (latest?.kind === "escalate" && /^revision \d+$/.test(latest.results ?? ""))
+        ? latest : undefined;
+      const revision = request !== undefined;
+      const revisionRequest = request?.kind === "escalate"
+        ? `Automatic escalation ${request.from} → ${request.to} (${request.reason}): Revise the approved plan to address the triggering evidence below.`
+        : request?.reason ?? "";
       const ctx =
         block("Exploration notes", read(join(runsDir(root, id), "facts.md"))) +
         block("Living specs (read as needed)", livingSpecs(root)) +
-        block("Latest revision request (binding scope)", rejections) +
-        (rejections ? block("Current plan files (revise them)", changeContext(root, id, () => true)) + reworkFeedback(root, task, true) : "");
-      // A first design must produce every file fresh. A revision after a rejection may keep files that
-      // were fine, but must change the plan.
-      const revision = rejections.length > 0;
+        block("Latest revision request (binding scope)", revisionRequest) +
+        (revision ? block("Current plan files (revise them)", changeContext(root, id, () => true)) : "") +
+        (request?.kind === "escalate" ? escalationFeedback(root, task, request) : revision ? reworkFeedback(root, task, true) : "");
+      // Revisions may retain plan files. First designs must produce fresh files.
       const filesBefore = revision ? planDigest(root, id) : "";
       const required = revision ? [] : ["proposal.md", "design.md", "tasks.md"].map((f) => `${folder}/${f}`);
-      const r = request?.node
+      const r = request?.kind === "reject" && request.node
         ? await reviseNode(root, task, config, io, request.node, ctx)
         : await runModel(root, task, config, io, "design", "design", ctx, [`${folder}/**`], required);
       const paused = pauseOn(r);
@@ -598,7 +629,8 @@ async function runVerify(
 
   if (r?.usageLimit) return pauseOn(r, leftoverCopy ? { cleanup_failed: leftoverCopy } : undefined)!;
 
-  const verdict = failure ? undefined : verdictOf(read(verdictPath));
+  const verdictText = failure ? "" : read(verdictPath);
+  const verdict = verdictOf(verdictText);
   if (!verdict) {
     const t = record(root, task, { kind: "complete", stage: "verify", outcome: "human" }, workingConfig, io);
     return report("human", t, failure ?? "unreadable_verdict", r);
@@ -609,8 +641,8 @@ async function runVerify(
   }
   const event: Event = verdict === "pass"
     ? { kind: "complete", stage: "verify", outcome: "pass", evidence: snap }
-    : { kind: "complete", stage: "verify", outcome: verdict };
-  const t = record(root, task, event, workingConfig, io);
+    : { kind: "complete", stage: "verify", outcome: verdict, byRun: true };
+  const t = record(root, task, event, workingConfig, io, verdict === "rework" ? verdictText : undefined);
   return report(verdict, t, undefined, { verdict: verdictPath, round });
 }
 

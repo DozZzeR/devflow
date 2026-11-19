@@ -20,7 +20,7 @@
 | Сохранённый статус | Следующее штатное действие | Что открывает следующий переход |
 |---|---|---|
 | `NEW` | На `small` сразу `implement`, на `medium/complex` — `explore` | Успешная реализация ведёт в `IMPLEMENTED`, исследование — в `EXPLORED`. |
-| `EXPLORED` | `design` | Проверенный план переводит задачу в `DESIGNED`. Сюда же возвращает пересмотр плана. |
+| `EXPLORED` | `design` | A valid plan advances to `DESIGNED`. Plan rejections and automatic escalations from `medium` to `complex` return here for a revision. |
 | `DESIGNED` | Ожидание решения по плану, при делегировании `run` вызывает `review` | Одобрение даёт `PLAN_APPROVED`. Отклонение создаёт новую ревизию и возвращает в `EXPLORED`. |
 | `PLAN_APPROVED` | `implement` | Успех даёт `IMPLEMENTED`. Конфликт может вернуть план в проектирование. |
 | `IMPLEMENTED` | `gates` | При успехе `small` завершается в `DONE`, остальные переходят в `GATES_PASSED`. |
@@ -37,9 +37,13 @@
 | `awaiting_plan_approval` | Автоматическое исполнение дошло до точки одобрения | Прочитать change и номер ревизии из `devflow nodes <id>`, затем одобрить просмотренную ревизию либо вернуть замечания. После трёх модельных отклонений полномочие возвращается человеку. |
 | `PLAN CONFLICT: [2.1/test] …` от исполнителя | Для принятого плана оркестратор распознаёт ключ проблемы и существующий ID узла. Первый конфликт отправляет план в design. Второй конфликт с тем же ключом в учитываемой последовательности ведёт к `plan_conflicts_limit`. | Проверить формулировку узла и зависимые требования. Из `HUMAN` по этой причине можно вернуть узел через `approve --revision … --reject … --node …`. |
 | `stale`, `plan_changed` или `snapshot_changed` | Устаревший ответ рецензента отбрасывается. Изменение одобренного плана требует повторного одобрения, изменение уже проверенного снимка — повторных gates. Третья инвалидация приводит к `HUMAN`. | Сверить ревизию, снимок и историю перед следующим запуском. |
-| `fail` при gates | Нарушение зоны сразу повышает сложность. Другие ошибки сначала возвращают к реализации, затем при достижении `limits.escalate_after` повышают сложность. На `complex` автоматическая эскалация передаёт решение человеку. | Проверить первую упавшую проверку, её причину и журнал. |
+| Gate `fail` | A zone violation escalates immediately. Other failures return to implementation until `limits.escalate_after` is reached. At `complex`, a gate escalation goes to `HUMAN`. | Review the failed gate, its reason and its recorded evidence. |
 | `blocked` при gates или `BLOCKED: …` от исполнителя | Проверку или работу невозможно выполнить в текущих условиях. Задача переходит в `HUMAN`. Событие блокировки роли не расходует попытку реализации. | Устранить причину из журнала. Учесть, что `--resume` открывает реализацию даже после остановки на другом этапе. |
-| `VERDICT: REWORK` | Учитывается попытка verify и число возвратов. На `medium` второй REWORK повышает сложность до `complex` и возвращает к design. Также действуют лимиты попыток verify и implement. | Разобрать замечания текущего раунда, исправить код либо явно согласовать пересмотр плана. |
+| `VERDICT: REWORK` | The attempt counts toward the verify and rework limits. The second `REWORK` on `medium` escalates to `complex` and starts a plan revision. | Review the latest verify findings. The designer receives them with the current plan and the escalation reason. |
+
+An automatic escalation from `medium` to `complex` increments `planRevision` once, clears the approval digest and gates snapshot, and records the trigger and `revision <N>` in history. The designer receives the current plan and a binding request naming the tier change and trigger. The context includes the triggering stage outcome and any recorded reason, including for outcomes entered with `devflow complete`. For `rework_repeated`, a verify run also supplies its verdict. For `zone_violation` or `gates_failed_repeatedly`, a gate run supplies its failed gate report, even if verify has yet to run. Detailed evidence is saved with the escalation that it triggered.
+
+After a failed design, run the task again to retry the same revision with the same escalation context. Design can retain valid plan files and spec deltas. Once design succeeds, approve the new revision at `DESIGNED`, or let `run` invoke the delegated reviewer when delegation is enabled. Approval using the old revision returns `plan_moved`.
 
 `run --once` выполняет до одного действия оркестратора. Обычный `run` может выполнить несколько стадий за вызов. В основном цикле `fail` и `blocked` завершают вызов с кодом 1. Ожидание решения, некоторые человеческие и устаревшие результаты допускают код 0. Для интеграции читайте `outcome`, `next.status` и `next.reason` из JSON. [Цикл](../src/stages.ts) · [CLI](../src/cli.ts) · [Интеграционные сценарии](../test/run.test.ts)
 
