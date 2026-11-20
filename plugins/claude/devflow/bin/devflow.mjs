@@ -40514,7 +40514,7 @@ Required files:
 - specs/<capability>/spec.md for each capability: "## ADDED|MODIFIED|REMOVED Requirements", each "### Requirement: <name>" with SHALL/MUST text (under 500 characters) and at least one "#### Scenario:" with **WHEN** / **THEN** lines. New capabilities start with "## Purpose".
 - design.md: "## Context", "## Decisions", "## Impact zone" (a list, one glob per line, of every file the implementer may change, including tests), "## Test plan" (which tests prove each scenario).
 - tasks.md: decompose the plan into independently verifiable nodes. Preserve existing node IDs across revisions. Each node names its acceptance scenario, dependencies where needed, and how to verify it. Use numbered groups with "- [ ] X.Y" checkbox tasks, each saying how it is verified.
-When revising a numbered REWORK after a scope decision, put one row per finding under "## Review decisions (round N)" in tasks.md. Use "- F1 | fix | 1.1 | concrete instruction" or "- F2 | defer | - | reason" or "- F3 | dismiss | - | reason". Derive N from the review context. Honor human scope decisions.
+Only when the context below includes a verify verdict with numbered findings (a REWORK from the verifier), put one row per finding under "## Review decisions (round N)" in tasks.md. A plan conflict raised by the implementer or a reviewer's rejection is not a verify round: answer it in the plan itself and add no review-decisions section for it. Use "- F1 | fix | 1.1 | concrete instruction" or "- F2 | defer | - | reason" or "- F3 | dismiss | - | reason". Derive N from the review context. Honor human scope decisions.
 Rewrite every spec delta you keep; delete deltas that no longer apply.
 
 {{context}}

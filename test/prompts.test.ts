@@ -207,3 +207,9 @@ test("design checks run a project-local openspec and report its failure", async 
 test("verify requests a separate Findings section before any test execution notes", () => {
   assert.match(TEMPLATES.verify, /## Findings/);
 });
+
+test("design writes review decisions only for a verify REWORK, never for a plan conflict", () => {
+  const design = TEMPLATES.design;
+  assert.match(design, /Only when the context below includes a verify verdict with numbered findings/);
+  assert.match(design, /plan conflict raised by the implementer[^.]*is not a verify round/);
+});
