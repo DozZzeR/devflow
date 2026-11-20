@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveCommand } from "../src/proc.js";
 import { loadConfig } from "../src/config.js";
 import { removeDetached } from "../src/git.js";
 import { runNextStage } from "../src/stages.js";
@@ -30,7 +31,12 @@ function setup(extra: Record<string, string> = {}, prepare?: (root: string, cfg:
   sh(root, "git", ["commit", "-q", "-m", "config"]);
   const bin = fakeAgentBin(join(tempDir(), "bin"));
   const prompts = join(tempDir(), "prompts");
-  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
+  // Preserve the host key's spelling. A plain object with both Path and PATH may resolve the installed CLI.
+  const pathKey = process.platform === "win32" ? Object.keys(process.env).find(k => k.toUpperCase() === "PATH") ?? "PATH" : "PATH";
+  const env = { ...process.env, [pathKey]: `${bin}${delimiter}${process.env[pathKey] ?? ""}`, FAKE_PROMPT_DIR: prompts, ...extra };
+  for (const vendor of ["claude", "codex"]) {
+    assert.equal(dirname(resolveCommand(vendor, env) ?? ""), bin, "workflow tests must use the fixture runner");
+  }
   /** Run the fixture CLI with additional environment overrides for one invocation. */
   const devflowWith = (more: Record<string, string>, ...args: string[]) => {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...more }, encoding: "utf8" });
