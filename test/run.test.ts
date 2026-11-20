@@ -417,6 +417,46 @@ test("implement and small allow the trusted generate command in the shell scope"
   }
 });
 
+test("implement and verify scopes follow the trusted test.focused only", async (t) => {
+  const focusedTemplate = "node check.js {files}";
+  const cases = [
+    { name: "committed focused", committed: true, working: true },
+    { name: "working-copy focused is ignored", committed: false, working: true },
+    { name: "focused not configured", committed: false, working: false },
+  ];
+  for (const c of cases) {
+    await t.test(c.name, () => {
+      const { root, devflow, lines, prompts } = setup({}, (_root, cfg) => {
+        cfg.roles.implement = { runner: "claude", model: "sonnet" };
+        cfg.roles.verify = { runner: "claude", model: "opus" };
+        if (c.committed) cfg.test.focused = focusedTemplate;
+      });
+      if (c.working && !c.committed) {
+        const path = join(root, ".devflow", "config.json");
+        const cfg = JSON.parse(readFileSync(path, "utf8"));
+        cfg.test.focused = focusedTemplate;
+        writeFileSync(path, JSON.stringify(cfg, null, 2));
+      }
+      assert.equal(devflow("start", "foc", "Focused scope").code, 0);
+      assert.equal(devflow("run", "foc").code, 0);
+      assert.equal(devflow("approve", "foc").code, 0);
+      const stages = lines(devflow("run", "foc").out).map((r) => `${r.stage}:${r.outcome}`);
+      assert.deepEqual(stages.slice(0, 3), ["implement:ok", "gates:pass", "verify:pass"]);
+      const logs = join(root, ".devflow", "runs", "foc", "logs");
+      const scope = (role: string) => JSON.parse(readFileSync(join(logs, `${role}-1.scope.json`), "utf8"));
+      const test = JSON.parse(readFileSync(join(root, ".devflow", "config.json"), "utf8")).test;
+      const expected = c.committed ? { template: focusedTemplate, paths: test.paths } : undefined;
+      assert.deepEqual(scope("implement").focused, expected);
+      assert.deepEqual(scope("verify").focused, expected);
+      assert.deepEqual(scope("implement").bash, c.committed ? [] : [test.command]);
+      assert.deepEqual(scope("verify").bash, c.committed ? [] : [test.command]);
+      const text = (stage: string) => readFileSync(join(prompts, readdirSync(prompts).find((f) => f.startsWith(stage))!), "utf8");
+      assert.equal(text("IMPLEMENT").includes(`\`${focusedTemplate}\``), c.committed);
+      assert.equal(text("VERIFY").includes(`\`${focusedTemplate}\``), c.committed);
+    });
+  }
+});
+
 test("verify regenerates its copy before the verifier and stops on generation failure", async (t) => {
   for (const fail of [false, true]) {
     await t.test(fail ? "generate failure" : "fresh bundle", () => {

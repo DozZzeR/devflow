@@ -39,11 +39,14 @@
       "**/*.test.*",
       "**/test_*.py"
     ],
-    "setup": "npm ci --no-audit --no-fund"
+    "setup": "npm ci --no-audit --no-fund",
+    "focused": "node scripts/test-focused.mjs {files}"
   },
   "build": {
     "generate": "npm run build:plugins",
-    "outputs": ["plugins/**"]
+    "outputs": [
+      "plugins/**"
+    ]
   },
   "openspec": {
     "cli": "auto"

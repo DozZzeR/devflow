@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config, Role } from "./config.js";
 import { DevflowError } from "./errors.js";
+import { FOCUSED_PLACEHOLDER, type FocusedScope } from "./focused.js";
 import type { Scope } from "./hook.js";
 import { detectUsageLimit, type UsageLimit } from "./limits.js";
 import { openLog } from "./logs.js";
@@ -31,6 +32,8 @@ export interface RunRequest {
   write: string[];
   /** Shell commands authorized for this role where supported by the runner. */
   bash: string[];
+  /** Focused test command template and the globs its files must match; enforced by the Claude hook only. */
+  focused?: FocusedScope;
   /** Paths that must be fresh, regular and nonempty after the call. */
   expect: string[];
   /** Role execution deadline in milliseconds. */
@@ -92,10 +95,12 @@ export interface Invocation {
 
 
 /** Construct the Claude CLI arguments and tool allowlist for a role. */
-export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash">, settingsPath: string): Invocation {
+export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash" | "focused">, settingsPath: string): Invocation {
   const allowed = ["Read", "Grep", "Glob"];
   for (const g of req.write) allowed.push(`Edit(${g})`, `Write(${g})`, `MultiEdit(${g})`);
   for (const c of req.bash) allowed.push(`Bash(${c})`);
+  // The hook stays the authority; this rule only keeps Claude's own permission layer from denying first.
+  if (req.focused) allowed.push(`Bash(${req.focused.template.slice(0, req.focused.template.indexOf(FOCUSED_PLACEHOLDER)).trim()}:*)`);
   const args = [
     "-p",
     "--model", req.role.model,
@@ -105,7 +110,7 @@ export function claudeInvocation(req: Pick<RunRequest, "role" | "write" | "bash"
     "--settings", settingsPath,
     "--allowedTools", ...allowed,
   ];
-  if (!req.bash.length) args.push("--disallowedTools", "Bash");
+  if (!req.bash.length && !req.focused) args.push("--disallowedTools", "Bash");
   return { command: "claude", args, scope: "enforced" };
 }
 
@@ -214,8 +219,8 @@ export function checkOutputs(root: string, expect: string[], before: Map<string,
 }
 
 /** Reject unsafe write patterns or shell permissions on an invocation with no write scope. */
-export function validateScope(write: string[], bash: string[]): void {
-  if (!write.length && bash.length) {
+export function validateScope(write: string[], bash: string[], focused?: FocusedScope): void {
+  if (!write.length && (bash.length || focused)) {
     throw new DevflowError("invalid_scope", "A read-only run (no --write) cannot be given shell commands.");
   }
   for (const g of write) {
@@ -239,7 +244,7 @@ export function passNames(config: Config, runner: Role["runner"]): { names: stri
 
 /** Run one role once. */
 export async function runRole(req: RunRequest): Promise<RunResult> {
-  validateScope(req.write, req.bash);
+  validateScope(req.write, req.bash, req.focused);
   const runnerSettings = req.config.runners;
   // Validate the command template before creating any file.
   if (req.role.runner === "command") commandInvocation(req.role.command, { model: "", prompt_file: "", cwd: "" });
@@ -257,7 +262,7 @@ export async function runRole(req: RunRequest): Promise<RunResult> {
       case "claude": {
         const scopePath = `${prefix}.scope.json`;
         const settingsPath = `${prefix}.settings.json`;
-        const scope: Scope = { root: resolve(workDir), write: req.write, bash: req.bash };
+        const scope: Scope = { root: resolve(workDir), write: req.write, bash: req.bash, ...(req.focused ? { focused: req.focused } : {}) };
         writeFileSync(scopePath, JSON.stringify(scope, null, 2), { flag: "wx" });
         writeFileSync(settingsPath, claudeSettings(scopePath), { flag: "wx" });
         inv = claudeInvocation(req, settingsPath);

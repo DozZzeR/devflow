@@ -62,6 +62,14 @@ export const ConfigSchema = z.strictObject({
   test: z.strictObject({
     command: z.string().min(1),
     paths: z.array(z.string().min(1)).min(1),
+    /** Optional command template with one `{files}` placeholder that runs only the given test files. */
+    focused: z.string().min(1).refine(
+      (template) => {
+        const names = [...template.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
+        return names.length === 1 && names[0] === "files" && template.split("{").length === 2 && template.split("}").length === 2;
+      },
+      "expected the placeholder {files} exactly once and no other {...} placeholder",
+    ).optional(),
     setup: z.string().min(1).optional(),
     setup_inputs: z
       .array(z.string().min(1))

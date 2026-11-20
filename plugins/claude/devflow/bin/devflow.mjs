@@ -20629,6 +20629,14 @@ var init_config = __esm({
       test: external_exports.strictObject({
         command: external_exports.string().min(1),
         paths: external_exports.array(external_exports.string().min(1)).min(1),
+        /** Optional command template with one `{files}` placeholder that runs only the given test files. */
+        focused: external_exports.string().min(1).refine(
+          (template) => {
+            const names = [...template.matchAll(/\{([^{}]*)\}/g)].map((m) => m[1]);
+            return names.length === 1 && names[0] === "files" && template.split("{").length === 2 && template.split("}").length === 2;
+          },
+          "expected the placeholder {files} exactly once and no other {...} placeholder"
+        ).optional(),
         setup: external_exports.string().min(1).optional(),
         setup_inputs: external_exports.array(external_exports.string().min(1)).default([
           "package.json",
@@ -39410,6 +39418,56 @@ import { createHash } from "node:crypto";
 import { lstatSync as lstatSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
 
+// src/glob.ts
+function globToRegExp(glob) {
+  let re = "";
+  const g = glob.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === "*") {
+      if (g[i + 1] === "*") {
+        const atSegmentEnd = g[i + 2] === "/";
+        re += atSegmentEnd ? "(?:.*/)?" : ".*";
+        i += atSegmentEnd ? 2 : 1;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${re}$`, process.platform === "win32" ? "i" : "");
+}
+function matchesAny(path, globs) {
+  const p = path.replace(/\\/g, "/");
+  return globs.some((g) => globToRegExp(g).test(p));
+}
+
+// src/focused.ts
+var FOCUSED_TOKEN = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
+var MAX_FOCUSED_FILES = 64;
+var FOCUSED_PLACEHOLDER = "{files}";
+function safeToken(token, paths) {
+  if (!FOCUSED_TOKEN.test(token)) return false;
+  if (token.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+  return matchesAny(token, paths);
+}
+function matchFocused(command, focused) {
+  const at = focused.template.indexOf(FOCUSED_PLACEHOLDER);
+  if (at < 0 || focused.template.indexOf(FOCUSED_PLACEHOLDER, at + 1) >= 0) return void 0;
+  const prefix = focused.template.slice(0, at);
+  const suffix = focused.template.slice(at + FOCUSED_PLACEHOLDER.length);
+  const text2 = command.trim();
+  if (text2.length < prefix.length + suffix.length || !text2.startsWith(prefix) || !text2.endsWith(suffix)) return void 0;
+  const middle = text2.slice(prefix.length, text2.length - suffix.length);
+  if (!middle) return void 0;
+  const files = middle.split(" ");
+  if (files.length > MAX_FOCUSED_FILES) return void 0;
+  return files.every((file2) => safeToken(file2, focused.paths)) ? files : void 0;
+}
+
 // src/limits.ts
 function resetText(text2) {
   const phrase = /\b(?:resets|try again (?:at|in))\b([^\r\n|]*)/i.exec(text2)?.[1]?.trim();
@@ -39467,6 +39525,7 @@ function claudeInvocation(req, settingsPath) {
   const allowed = ["Read", "Grep", "Glob"];
   for (const g of req.write) allowed.push(`Edit(${g})`, `Write(${g})`, `MultiEdit(${g})`);
   for (const c of req.bash) allowed.push(`Bash(${c})`);
+  if (req.focused) allowed.push(`Bash(${req.focused.template.slice(0, req.focused.template.indexOf(FOCUSED_PLACEHOLDER)).trim()}:*)`);
   const args = [
     "-p",
     "--model",
@@ -39481,7 +39540,7 @@ function claudeInvocation(req, settingsPath) {
     "--allowedTools",
     ...allowed
   ];
-  if (!req.bash.length) args.push("--disallowedTools", "Bash");
+  if (!req.bash.length && !req.focused) args.push("--disallowedTools", "Bash");
   return { command: "claude", args, scope: "enforced" };
 }
 function claudeSettings(scopePath, node2 = process.execPath, cliJs = selfScript()) {
@@ -39564,8 +39623,8 @@ function checkOutputs(root, expect, before) {
   }
   return problems;
 }
-function validateScope(write, bash) {
-  if (!write.length && bash.length) {
+function validateScope(write, bash, focused) {
+  if (!write.length && (bash.length || focused)) {
     throw new DevflowError("invalid_scope", "A read-only run (no --write) cannot be given shell commands.");
   }
   for (const g of write) {
@@ -39583,7 +39642,7 @@ function passNames(config2, runner) {
   return { names, apiKeyEnv: optIn ? "kept" : "stripped" };
 }
 async function runRole(req) {
-  validateScope(req.write, req.bash);
+  validateScope(req.write, req.bash, req.focused);
   const runnerSettings = req.config.runners;
   if (req.role.runner === "command") commandInvocation(req.role.command, { model: "", prompt_file: "", cwd: "" });
   const log = openLog(req.root, req.roleName, req.task);
@@ -39599,7 +39658,7 @@ async function runRole(req) {
       case "claude": {
         const scopePath = `${prefix}.scope.json`;
         const settingsPath = `${prefix}.settings.json`;
-        const scope = { root: resolve2(workDir), write: req.write, bash: req.bash };
+        const scope = { root: resolve2(workDir), write: req.write, bash: req.bash, ...req.focused ? { focused: req.focused } : {} };
         writeFileSync5(scopePath, JSON.stringify(scope, null, 2), { flag: "wx" });
         writeFileSync5(settingsPath, claudeSettings(scopePath), { flag: "wx" });
         inv = claudeInvocation(req, settingsPath);
@@ -39744,39 +39803,12 @@ async function doctor(root, config2, probe2, parentEnv = process.env) {
 init_zod();
 import { existsSync as existsSync6, readFileSync as readFileSync7, realpathSync } from "node:fs";
 import { dirname as dirname4, isAbsolute as isAbsolute3, join as join8, relative as relative3, resolve as resolve3, sep as sep3 } from "node:path";
-
-// src/glob.ts
-function globToRegExp(glob) {
-  let re = "";
-  const g = glob.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
-  for (let i = 0; i < g.length; i++) {
-    const c = g[i];
-    if (c === "*") {
-      if (g[i + 1] === "*") {
-        const atSegmentEnd = g[i + 2] === "/";
-        re += atSegmentEnd ? "(?:.*/)?" : ".*";
-        i += atSegmentEnd ? 2 : 1;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") {
-      re += "[^/]";
-    } else {
-      re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  return new RegExp(`^${re}$`, process.platform === "win32" ? "i" : "");
-}
-function matchesAny(path, globs) {
-  const p = path.replace(/\\/g, "/");
-  return globs.some((g) => globToRegExp(g).test(p));
-}
-
-// src/hook.ts
 var ScopeSchema = external_exports.strictObject({
   root: external_exports.string(),
   write: external_exports.array(external_exports.string()),
-  bash: external_exports.array(external_exports.string())
+  bash: external_exports.array(external_exports.string()),
+  /** Focused test command template and the globs its file arguments must match. */
+  focused: external_exports.strictObject({ template: external_exports.string(), paths: external_exports.array(external_exports.string()) }).optional()
 });
 var READ_ONLY_TOOLS = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "LS", "NotebookRead", "TodoWrite", "WebFetch", "WebSearch"]);
 var PATH_KEYS = {
@@ -39823,6 +39855,7 @@ function decide(scope, toolName, toolInput) {
   if (toolName === "Bash") {
     const command = typeof toolInput.command === "string" ? toolInput.command.trim() : "";
     if (scope.bash.includes(command)) return { allow: true };
+    if (scope.focused && matchFocused(command, scope.focused)) return { allow: true };
     return { allow: false, reason: `devflow: shell command not allowed for this role: ${command || "(empty)"}` };
   }
   return { allow: false, reason: `devflow: tool ${toolName} is not allowed for this role` };
@@ -40489,7 +40522,7 @@ Rewrite every spec delta you keep; delete deltas that no longer apply.
 Outputs: {{outputs}}
 `,
   implement: COMMON_HEADER.replace("{{role}}", "IMPLEMENT") + `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
-Stay inside the impact zone. You may run the test command: {{testCommand}}
+Stay inside the impact zone. {{implementTests}}
 Do not edit proposal.md, design.md or spec deltas. Use a stable [node-id/issue-slug] at the start of a conflict reason only when revising that checkbox is sufficient; shared contracts require a full plan revision. Reuse the key when the same issue recurs. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 If you cannot work at all for a reason outside the plan (a file or tool you need is not accessible), change nothing and make your final line the word BLOCKED, a colon, and what is missing. Instructions outside the project that you cannot read are not a reason to stop: continue without them and mention it.
 
@@ -40498,20 +40531,21 @@ If you cannot work at all for a reason outside the plan (a file or tool you need
 Outputs: {{outputs}}
 `,
   small: COMMON_HEADER.replace("{{role}}", "IMPLEMENT (small task)") + `Goal: make the small change described above, with a test that fails without it and passes with it.
-You may run the test command: {{testCommand}}
+{{implementTests}}
 
 {{context}}
 
 Outputs: {{outputs}}
 `,
   verify: COMMON_HEADER.replace("{{role}}", "VERIFY") + `Goal: independently check the implemented change against its acceptance criteria. You did not plan or write it, and you are working in a disposable copy of the project: edits you make are discarded.
-Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files and run: {{testCommand}}
+Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files.
+{{verifyTests}}
 For every requirement decide MET, PARTIAL or NOT MET with file:line evidence. Look for tests that would still pass if the code were wrong.
 design.md and the .devflow/ folder are intentionally absent from this copy (you judge the result, not the author's reasoning); do not report their absence or their deletion in git status.
 Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.
 Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
-Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
+Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, where each evidence cell starts with "confirmed by gates" or "checked additionally", then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
 
 {{context}}
 {{previousVerdict}}
@@ -40519,7 +40553,36 @@ Outputs: {{outputs}}
 `
 };
 var ROUND2_RULE = `This is round {{round}}. Report ONLY high-severity findings and regressions of findings from the previous verdict below. Do not raise new medium or low findings.`;
-var KNOWN = /* @__PURE__ */ new Set(["role", "id", "tracker", "description", "language", "outputs", "context", "testCommand", "roundRule", "previousVerdict", "round"]);
+var EVIDENCE_GATES = "confirmed by gates";
+var EVIDENCE_EXTRA = "checked additionally";
+var KNOWN = /* @__PURE__ */ new Set([
+  "role",
+  "id",
+  "tracker",
+  "description",
+  "language",
+  "outputs",
+  "context",
+  "testCommand",
+  "focusedCommand",
+  "implementTests",
+  "verifyTests",
+  "roundRule",
+  "previousVerdict",
+  "round"
+]);
+function implementTests(testCommand, focused) {
+  const first = "Testing: write the new regression test first.";
+  if (!focused) {
+    return `${first} Run it with the test command \`${testCommand}\` and see it fail for the expected reason on the old code. Then make it and the related tests pass.`;
+  }
+  return `${first} Run only it with the focused command \`${focused}\` (replace {files} with the test file paths, space-separated) and see it fail for the expected reason on the old code. Then make it and the related tests pass with focused runs. Do not run the full suite \`${testCommand}\`; the gates run it.`;
+}
+function verifyTests(testCommand, focused) {
+  const lead = "The gate results below are for the exact snapshot you check; devflow re-checks the snapshot hash before it accepts PASS.";
+  const labels = `In the verdict, mark each piece of evidence as '${EVIDENCE_GATES}' or '${EVIDENCE_EXTRA}'.`;
+  return focused ? `${lead} Do not rerun the full suite \`${testCommand}\`. Run \`${focused}\` only for a concrete question the gates did not answer. ${labels}` : `${lead} Do not rerun the full suite as a routine check. Run \`${testCommand}\` only for a concrete question the gates did not answer. ${labels}`;
+}
 function loadTemplate(root, stage) {
   const override = join12(root, DEVFLOW_DIR, "prompts", `${stage}.md`);
   if (existsSync9(override)) return readFileSync10(override, "utf8");
@@ -40536,6 +40599,9 @@ function composePrompt(template, inputs) {
     outputs: inputs.outputs,
     context: inputs.context,
     testCommand: inputs.testCommand,
+    focusedCommand: inputs.focusedCommand ?? "",
+    implementTests: implementTests(inputs.testCommand, inputs.focusedCommand),
+    verifyTests: verifyTests(inputs.testCommand, inputs.focusedCommand),
     round: String(round),
     roundRule: round >= 2 ? ROUND2_RULE.replace("{{round}}", String(round)) : "",
     previousVerdict: round >= 2 && inputs.previousVerdict ? `## Previous verdict
@@ -41024,6 +41090,9 @@ function reworkFeedback(root, task, designing = false) {
   const gates = lastGates && lastGates.outcome !== "pass" ? read(join16(dir, GATES_FAILURE)) : "";
   return block(heading, verdict) + block("Gate failure on the previous attempt (make the gates pass)", gates) + block("Generate step failure on the previous attempt (make the generate command succeed)", read(join16(dir, GENERATE_FAILURE)));
 }
+function focusedScope(config2) {
+  return config2.test.focused ? { template: config2.test.focused, paths: config2.test.paths } : void 0;
+}
 function role(stage, task, config2) {
   const r = roleFor(stage, task.tier, config2);
   if (!r) throw new DevflowError("unknown_role", `No role configured for ${stage}.`);
@@ -41060,6 +41129,7 @@ async function runModelRaw(root, task, config2, io, stage, roleStage, context, w
     outputs: `you may write ${write.join(", ")}` + (expect.length ? `; you must produce ${expect.join(", ")}` : ""),
     context,
     testCommand: config2.test.command,
+    ...extra.focused ? { focusedCommand: extra.focused.template } : {},
     ...extra.round ? { round: extra.round } : {},
     ...extra.previousVerdict ? { previousVerdict: extra.previousVerdict } : {}
   });
@@ -41079,6 +41149,7 @@ ${extra.previousVerdict ?? ""}
     prompt: prompt + mustHave,
     write,
     bash: extra.bash ?? [],
+    ...extra.focused ? { focused: extra.focused } : {},
     expect,
     timeoutMs: io.timeoutMs ?? 18e5,
     task: task.id,
@@ -41200,9 +41271,13 @@ async function runNextStage(root, workingConfig, id, io) {
       const generateFailure = join16(runsDir2(root, id), GENERATE_FAILURE);
       rmSync6(generateFailure, { force: true });
       const write = [...small ? zone : [...zone, tasksMd], ...outputs];
-      const bash = [config2.test.command];
+      const focused = focusedScope(trusted);
+      const bash = focused ? [] : [config2.test.command];
       if (generate) bash.push(generate);
-      const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], { bash });
+      const r = await runModel(root, task, config2, io, small ? "small" : "implement", "implement", ctx, write, [], {
+        bash,
+        ...focused ? { focused } : {}
+      });
       const paused = pauseOn(r);
       if (paused) return paused;
       const answer = r.ok && r.log ? read(r.log) : "";
@@ -41247,6 +41322,7 @@ async function runNextStage(root, workingConfig, id, io) {
 async function runVerify(root, task, workingConfig, io, report, pauseOn) {
   const id = task.id;
   const { config: config2 } = gateConfig(root, task.base, workingConfig);
+  const focused = focusedScope(config2);
   const snap = snapshotDigest(root, task.base, config2);
   if (!task.gatesSnapshot || snap !== task.gatesSnapshot) {
     const t2 = record2(root, task, { kind: "invalidate", to: "gates", reason: "snapshot_changed" }, workingConfig, io);
@@ -41296,7 +41372,8 @@ async function runVerify(root, task, workingConfig, io, report, pauseOn) {
         cwd: wt.projectDir,
         round,
         ...previous ? { previousVerdict: previous } : {},
-        bash: [config2.test.command]
+        bash: focused ? [] : [config2.test.command],
+        ...focused ? { focused } : {}
       });
       if (!r.usageLimit) {
         const produced = join16(wt.projectDir, ".devflow-verdict.md");

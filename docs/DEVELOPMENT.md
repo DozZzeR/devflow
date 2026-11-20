@@ -76,6 +76,8 @@ After a failed design, run the task again to retry the same revision with the sa
 3. `tests` запускает настроенную команду в рабочем дереве. `rollback` создаёт временное дерево на `base`: сначала тесты должны пройти, затем изменённые тесты без реализации должны упасть допустимым образом, а после наложения полного изменения — пройти. Так обнаруживаются тесты, которые уже были зелёными на старом коде. Один вызов `gate <id> tests` даёт диагностику. Переход записывает полный `gate <id> all`, когда ожидается стадия gates.
 4. После gates сохраняется хеш снимка. Перед принятием `PASS` оркестратор повторно сверяет его с рабочим деревом. Ручное принятие gates или verify требует `--override` с причиной, которая попадает в историю.
 
+5. Roles do not repeat the full test suite. When the base-commit config has `test.focused`, implement, small and verify get only that command (a template with `{files}`). The Claude hook allows it only with files that match `test.paths` ([matcher](../src/focused.ts)). Verify relies on the gate results for the same snapshot and runs focused tests only for a concrete question the gates did not answer. The verdict separates evidence "confirmed by gates" from evidence "checked additionally".
+
 [Проверки](../src/gates.ts) · [Хеши](../src/snapshot.ts) · [Тесты rollback](../test/gates.test.ts)
 
 ## Два примера запуска

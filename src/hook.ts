@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { matchFocused } from "./focused.js";
 import { matchesAny } from "./glob.js";
 
 /** What a run may do; written by the claude runner, read by the hook. */
@@ -10,6 +11,8 @@ export const ScopeSchema = z.strictObject({
   root: z.string(),
   write: z.array(z.string()),
   bash: z.array(z.string()),
+  /** Focused test command template and the globs its file arguments must match. */
+  focused: z.strictObject({ template: z.string(), paths: z.array(z.string()) }).optional(),
 });
 /** Filesystem root, write globs and shell commands approved for one invocation. */
 export type Scope = z.infer<typeof ScopeSchema>;
@@ -72,6 +75,7 @@ export function decide(scope: Scope, toolName: string, toolInput: Record<string,
   if (toolName === "Bash") {
     const command = typeof toolInput.command === "string" ? toolInput.command.trim() : "";
     if (scope.bash.includes(command)) return { allow: true };
+    if (scope.focused && matchFocused(command, scope.focused)) return { allow: true };
     return { allow: false, reason: `devflow: shell command not allowed for this role: ${command || "(empty)"}` };
   }
 

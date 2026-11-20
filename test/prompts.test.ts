@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { composePrompt, loadTemplate, section, TEMPLATES } from "../src/prompts.js";
+import { composePrompt, EVIDENCE_EXTRA, EVIDENCE_GATES, loadTemplate, section, TEMPLATES } from "../src/prompts.js";
 import { checkDesign } from "../src/artifacts.js";
 import { normaliseTasks, planDigest, snapshotDigest } from "../src/snapshot.js";
 import { initProject, loadConfig } from "../src/config.js";
@@ -50,6 +50,53 @@ test("verify prompt defines the severity rubric in every round", () => {
     assert.ok(r2.includes(d), `round 2 lacks: ${d}`);
   }
   assert.equal(r2.split("ONLY high-severity findings and regressions").length - 1, 1);
+});
+
+/** Focused command template used by the focused prompt cases. */
+const FOCUSED = "node scripts/test-focused.mjs {files}";
+
+test("implement and small prompts tell the role to run focused tests, not the full suite", () => {
+  for (const stage of ["implement", "small"] as const) {
+    const p = composePrompt(TEMPLATES[stage], { ...base, focusedCommand: FOCUSED });
+    assert.ok(p.includes(`\`${FOCUSED}\``), stage);
+    assert.match(p, /write the new regression test first/);
+    assert.match(p, /fail for the expected reason on the old code/);
+    assert.match(p, /related tests pass with focused runs/);
+    assert.match(p, /Do not run the full suite `npm test`; the gates run it/);
+    const plain = composePrompt(TEMPLATES[stage], base);
+    assert.match(plain, /write the new regression test first/);
+    assert.match(plain, /fail for the expected reason/);
+    assert.match(plain, /`npm test`/);
+    assert.doesNotMatch(plain, /Do not run the full suite/);
+  }
+});
+
+test("verify prompt relies on gate evidence and labels what it checked itself", () => {
+  const rubric = [
+    "Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.",
+    "Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.",
+  ];
+  for (const focusedCommand of [FOCUSED, undefined]) {
+    for (const round of [1, 2]) {
+      const p = composePrompt(TEMPLATES.verify, { ...base, round, ...(focusedCommand ? { focusedCommand } : {}), previousVerdict: "OLD" });
+      assert.match(p, /exact snapshot you check; devflow re-checks the snapshot hash before it accepts PASS/);
+      assert.match(p, /Do not rerun the full suite/);
+      assert.match(p, /only for a concrete question the gates did not answer/);
+      assert.ok(p.includes(`'${EVIDENCE_GATES}'`) && p.includes(`'${EVIDENCE_EXTRA}'`));
+      assert.ok(p.includes(`"${EVIDENCE_GATES}"`) && p.includes(`"${EVIDENCE_EXTRA}"`));
+      for (const r of rubric) assert.ok(p.includes(r), r);
+      assert.equal(p.includes(`\`${FOCUSED}\``), focusedCommand !== undefined);
+      assert.equal(p.includes("full suite `npm test`"), focusedCommand !== undefined);
+      assert.equal(p.includes("Run `npm test` only"), focusedCommand === undefined);
+      assert.equal(p.includes("ONLY high-severity findings and regressions"), round === 2);
+    }
+  }
+});
+
+test("prompt overrides may use the focused placeholders", () => {
+  const t = "{{testCommand}}|{{focusedCommand}}|{{implementTests}}|{{verifyTests}}";
+  assert.ok(composePrompt(t, { ...base, focusedCommand: FOCUSED }).includes(`|${FOCUSED}|`));
+  assert.ok(composePrompt(t, base).startsWith("npm test||"));
 });
 
 test("project override replaces a template; unknown placeholders are rejected", () => {

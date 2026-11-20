@@ -36,6 +36,40 @@ test("bash: only exact allowed commands", () => {
   assert.equal(allowed("Bash", { command: "ls" }), false);
 });
 
+/** Scope with a focused test command in addition to the exact full command. */
+const focusedScope: Scope = {
+  ...scope,
+  focused: { template: "node scripts/test-focused.mjs {files}", paths: ["test/**"] },
+};
+/** Decision for a Bash command under the focused scope. */
+const focusedAllowed = (command: string) => decide(focusedScope, "Bash", { command }).allow;
+
+test("bash: a focused command with test files is allowed, anything else is denied", () => {
+  const P = "node scripts/test-focused.mjs";
+  assert.equal(focusedAllowed(`${P} test/hook.test.ts test/config.test.ts`), true);
+  assert.equal(focusedAllowed("npm test"), true);
+  for (const bad of [
+    `${P} src/hook.ts`, `${P} test/../src/hook.ts`, `${P} test/a.ts && rm -rf src`, `${P} test/a.ts;rm`,
+    `${P} test/a.ts | cat`, `${P} test/a.ts\nrm x`, `${P} $(x)`, `${P} "test/a.ts"`, `${P} test/*.ts`, `${P} -r x`,
+    P, `${P} {files}`, "node scripts/test-focused.mjs {files}", "ls",
+  ]) assert.equal(focusedAllowed(bad), false, JSON.stringify(bad));
+  const denied = decide(focusedScope, "Bash", { command: `${P} src/hook.ts` });
+  assert.ok(!denied.allow && /shell command not allowed/.test(denied.reason));
+});
+
+test("bash without a focused entry keeps exact matching", () => {
+  assert.equal(allowed("Bash", { command: "node scripts/test-focused.mjs test/a.ts" }), false);
+});
+
+test("runHook honours a focused entry in the scope file", () => {
+  const f = join(tempDir(), "scope.json");
+  writeFileSync(f, JSON.stringify(focusedScope));
+  const run = (command: string) =>
+    JSON.parse(runHook(f, JSON.stringify({ tool_name: "Bash", tool_input: { command } }))).hookSpecificOutput.permissionDecision;
+  assert.equal(run("node scripts/test-focused.mjs test/x.test.ts"), "allow");
+  assert.equal(run("node scripts/test-focused.mjs src/x.ts"), "deny");
+});
+
 test("unknown and MCP tools are denied", () => {
   assert.equal(allowed("mcp__github__create_issue", {}), false);
   assert.equal(allowed("SomeNewTool", {}), false);

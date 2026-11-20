@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkOutputs, claudeInvocation, claudeSettings, codexInvocation, commandInvocation, runRole, validateScope } from "../src/runners.js";
 import { DevflowError } from "../src/errors.js";
@@ -54,6 +54,41 @@ test("claude invocation: dontAsk, hook settings, scoped tools, bash denied when 
   const withBash = claudeInvocation({ role: { runner: "claude", model: "m" }, write: ["a/**"], bash: ["npm test"] }, "S");
   assert.ok(withBash.args.includes("Bash(npm test)"));
   assert.ok(!withBash.args.includes("--disallowedTools"));
+});
+
+test("claude invocation with a focused scope allows the template prefix and keeps Bash enabled", () => {
+  const focused = { template: "node scripts/test-focused.mjs {files}", paths: ["test/**"] };
+  const inv = claudeInvocation({ role: { runner: "claude", model: "m" }, write: ["src/**"], bash: [], focused }, "S");
+  assert.ok(inv.args.includes("Bash(node scripts/test-focused.mjs:*)"));
+  assert.ok(!inv.args.includes("--disallowedTools"));
+});
+
+test("a read-only run cannot be given a focused scope", async () => {
+  const focused = { template: "node scripts/test-focused.mjs {files}", paths: ["test/**"] };
+  assert.throws(() => validateScope([], [], focused), reason("invalid_scope"));
+  validateScope(["src/**"], [], focused);
+  const root = tempDir();
+  initProject(root, { detected: { claude: true, codex: false } });
+  const config = loadConfig(root);
+  await assert.rejects(
+    runRole({ root, config, roleName: "explore", role: config.roles.explore, prompt: "p", write: [], bash: [], focused, expect: [], timeoutMs: 1000 }),
+    reason("invalid_scope"),
+  );
+});
+
+test("the Claude runner writes the focused scope into the scope file", async () => {
+  const root = tempDir();
+  initProject(root, { detected: { claude: true, codex: false } });
+  const config = loadConfig(root);
+  const env = testEnv(fakeBin(join(tempDir(), "bin"), ["claude"]), {});
+  const focused = { template: "node scripts/test-focused.mjs {files}", paths: ["test/**"] };
+  const result = await runRole({
+    root, config, roleName: "implement", role: config.roles.implement, prompt: "p",
+    write: ["src/**"], bash: [], focused, expect: [], timeoutMs: 10_000, parentEnv: env,
+  });
+  const scope = JSON.parse(readFileSync(result.log.replace(/\.log$/, ".scope.json"), "utf8"));
+  assert.deepEqual(scope.focused, focused);
+  assert.deepEqual(scope.bash, []);
 });
 
 test("claude settings register the devflow PreToolUse hook for every tool", () => {

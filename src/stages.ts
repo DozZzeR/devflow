@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Config } from "./config.js";
 import { DEVFLOW_DIR } from "./config.js";
 import { DevflowError } from "./errors.js";
+import type { FocusedScope } from "./focused.js";
 import { checkDesign } from "./artifacts.js";
 import { applyPaths, gateConfig, runAllGates, runCommand, runGenerate, type GateResult } from "./gates.js";
 import { addWorktree, changeSet, detachWorktreeGit, removeDetached, repoInfo } from "./git.js";
@@ -258,6 +259,11 @@ function reworkFeedback(root: string, task: TaskState, designing = false): strin
   );
 }
 
+/** The focused test scope of a (trusted) config, or undefined when no `test.focused` is configured. */
+function focusedScope(config: Config): FocusedScope | undefined {
+  return config.test.focused ? { template: config.test.focused, paths: config.test.paths } : undefined;
+}
+
 /** Resolve the configured role for a stage or raise a domain error if it is unavailable. */
 function role(stage: Stage, task: TaskState, config: Config) {
   const r = roleFor(stage, task.tier, config);
@@ -300,7 +306,7 @@ async function runModelRaw(
   context: string,
   write: string[],
   expect: string[],
-  extra: { nodePrompt?: string; bash?: string[]; cwd?: string; round?: number; previousVerdict?: string } = {},
+  extra: { nodePrompt?: string; bash?: string[]; focused?: FocusedScope; cwd?: string; round?: number; previousVerdict?: string } = {},
 ): Promise<RunResult> {
   const prompt = extra.nodePrompt ?? composePrompt(loadTemplate(root, stage), {
     id: task.id,
@@ -310,6 +316,7 @@ async function runModelRaw(
     outputs: `you may write ${write.join(", ")}` + (expect.length ? `; you must produce ${expect.join(", ")}` : ""),
     context,
     testCommand: config.test.command,
+    ...(extra.focused ? { focusedCommand: extra.focused.template } : {}),
     ...(extra.round ? { round: extra.round } : {}),
     ...(extra.previousVerdict ? { previousVerdict: extra.previousVerdict } : {}),
   });
@@ -325,6 +332,7 @@ async function runModelRaw(
     prompt: prompt + mustHave,
     write,
     bash: extra.bash ?? [],
+    ...(extra.focused ? { focused: extra.focused } : {}),
     expect,
     timeoutMs: io.timeoutMs ?? 1_800_000,
     task: task.id,
@@ -475,9 +483,13 @@ export async function runNextStage(root: string, workingConfig: Config, id: stri
       const generateFailure = join(runsDir(root, id), GENERATE_FAILURE);
       rmSync(generateFailure, { force: true });
       const write = [...(small ? zone : [...zone, tasksMd]), ...outputs];
-      const bash = [config.test.command];
+      const focused = focusedScope(trusted);
+      const bash = focused ? [] : [config.test.command];
       if (generate) bash.push(generate);
-      const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], { bash });
+      const r = await runModel(root, task, config, io, small ? "small" : "implement", "implement", ctx, write, [], {
+        bash,
+        ...(focused ? { focused } : {}),
+      });
       const paused = pauseOn(r);
       if (paused) return paused;
       const answer = r.ok && r.log ? read(r.log) : "";
@@ -533,6 +545,7 @@ async function runVerify(
 ): Promise<StageReport> {
   const id = task.id;
   const { config } = gateConfig(root, task.base, workingConfig);
+  const focused = focusedScope(config);
   const snap = snapshotDigest(root, task.base!, config);
   if (!task.gatesSnapshot || snap !== task.gatesSnapshot) {
     const t = record(root, task, { kind: "invalidate", to: "gates", reason: "snapshot_changed" }, workingConfig, io);
@@ -593,7 +606,8 @@ async function runVerify(
         cwd: wt.projectDir,
         round,
         ...(previous ? { previousVerdict: previous } : {}),
-        bash: [config.test.command],
+        bash: focused ? [] : [config.test.command],
+        ...(focused ? { focused } : {}),
       });
       if (!r.usageLimit) {
         const produced = join(wt.projectDir, ".devflow-verdict.md");

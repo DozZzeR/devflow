@@ -24,6 +24,8 @@ export interface PromptInputs {
   context: string;
   /** Project test command provided to the role. */
   testCommand: string;
+  /** Focused test command template with a `{files}` placeholder, when the project configures one. */
+  focusedCommand?: string;
   /** Verification round controlling whether previous findings are in scope. */
   round?: number;
   /** Review evidence inserted for a subsequent verification round. */
@@ -74,7 +76,7 @@ Outputs: {{outputs}}
   implement:
     COMMON_HEADER.replace("{{role}}", "IMPLEMENT") +
     `Goal: implement the approved plan. Follow tasks.md in order, write tests first where the test plan names them, and tick each finished task in tasks.md ("- [x]").
-Stay inside the impact zone. You may run the test command: {{testCommand}}
+Stay inside the impact zone. {{implementTests}}
 Do not edit proposal.md, design.md or spec deltas. Use a stable [node-id/issue-slug] at the start of a conflict reason only when revising that checkbox is sufficient; shared contracts require a full plan revision. Reuse the key when the same issue recurs. If the plan itself is wrong, or a finding below cannot be fixed without changing the plan, change nothing and make your final line the words PLAN CONFLICT, a colon, and what the plan must change; devflow then sends the plan back to design.
 If you cannot work at all for a reason outside the plan (a file or tool you need is not accessible), change nothing and make your final line the word BLOCKED, a colon, and what is missing. Instructions outside the project that you cannot read are not a reason to stop: continue without them and mention it.
 
@@ -85,7 +87,7 @@ Outputs: {{outputs}}
   small:
     COMMON_HEADER.replace("{{role}}", "IMPLEMENT (small task)") +
     `Goal: make the small change described above, with a test that fails without it and passes with it.
-You may run the test command: {{testCommand}}
+{{implementTests}}
 
 {{context}}
 
@@ -94,13 +96,14 @@ Outputs: {{outputs}}
   verify:
     COMMON_HEADER.replace("{{role}}", "VERIFY") +
     `Goal: independently check the implemented change against its acceptance criteria. You did not plan or write it, and you are working in a disposable copy of the project: edits you make are discarded.
-Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files and run: {{testCommand}}
+Acceptance criteria are the requirements and scenarios in the spec deltas below. You may read the changed files.
+{{verifyTests}}
 For every requirement decide MET, PARTIAL or NOT MET with file:line evidence. Look for tests that would still pass if the code were wrong.
 design.md and the .devflow/ folder are intentionally absent from this copy (you judge the result, not the author's reasoning); do not report their absence or their deletion in git status.
 Severity: high = an acceptance criterion is not met, data loss, or a leak or escape within the threat model stated in the context below; medium = a likely defect with a workaround; low = style, tests or hardening outside the threat model. Without a stated threat model, rate leaks and escapes against the acceptance criteria.
 Verdict rule: REWORK only for at least one high or medium finding; HUMAN when you cannot judge; otherwise PASS, listing low findings as notes.
 {{roundRule}}
-Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
+Write the verdict file in English, first line exactly one of: "VERDICT: PASS", "VERDICT: REWORK", "VERDICT: HUMAN". Then a table requirement | status | evidence, where each evidence cell starts with "confirmed by gates" or "checked additionally", then a separate Markdown section headed exactly "## Findings". Put one unindented numbered item per finding (severity high/medium/low, file:line, concrete fix); indent continuation lines. Put test execution notes under a separate heading. REWORK needs at least one concrete fix. No praise.
 
 {{context}}
 {{previousVerdict}}
@@ -111,8 +114,34 @@ Outputs: {{outputs}}
 /** Limit later verify rounds to high-severity issues and regressions of prior findings. */
 const ROUND2_RULE = `This is round {{round}}. Report ONLY high-severity findings and regressions of findings from the previous verdict below. Do not raise new medium or low findings.`;
 
+/** Evidence label for results the gates produced for the exact snapshot. */
+export const EVIDENCE_GATES = "confirmed by gates";
+/** Evidence label for results the verifier checked itself. */
+export const EVIDENCE_EXTRA = "checked additionally";
+
 /** Placeholder names accepted by project prompt overrides. */
-const KNOWN = new Set(["role", "id", "tracker", "description", "language", "outputs", "context", "testCommand", "roundRule", "previousVerdict", "round"]);
+const KNOWN = new Set([
+  "role", "id", "tracker", "description", "language", "outputs", "context", "testCommand", "focusedCommand",
+  "implementTests", "verifyTests", "roundRule", "previousVerdict", "round",
+]);
+
+/** Testing rules for implement and small prompts; focused runs replace full-suite runs when configured. */
+function implementTests(testCommand: string, focused: string | undefined): string {
+  const first = "Testing: write the new regression test first.";
+  if (!focused) {
+    return `${first} Run it with the test command \`${testCommand}\` and see it fail for the expected reason on the old code. Then make it and the related tests pass.`;
+  }
+  return `${first} Run only it with the focused command \`${focused}\` (replace {files} with the test file paths, space-separated) and see it fail for the expected reason on the old code. Then make it and the related tests pass with focused runs. Do not run the full suite \`${testCommand}\`; the gates run it.`;
+}
+
+/** Testing rules for the verify prompt: gate evidence first, extra runs only for open questions. */
+function verifyTests(testCommand: string, focused: string | undefined): string {
+  const lead = "The gate results below are for the exact snapshot you check; devflow re-checks the snapshot hash before it accepts PASS.";
+  const labels = `In the verdict, mark each piece of evidence as '${EVIDENCE_GATES}' or '${EVIDENCE_EXTRA}'.`;
+  return focused
+    ? `${lead} Do not rerun the full suite \`${testCommand}\`. Run \`${focused}\` only for a concrete question the gates did not answer. ${labels}`
+    : `${lead} Do not rerun the full suite as a routine check. Run \`${testCommand}\` only for a concrete question the gates did not answer. ${labels}`;
+}
 
 /** Load a project stage override if present, otherwise return its built-in prompt. */
 export function loadTemplate(root: string, stage: PromptStage): string {
@@ -133,6 +162,9 @@ export function composePrompt(template: string, inputs: PromptInputs): string {
     outputs: inputs.outputs,
     context: inputs.context,
     testCommand: inputs.testCommand,
+    focusedCommand: inputs.focusedCommand ?? "",
+    implementTests: implementTests(inputs.testCommand, inputs.focusedCommand),
+    verifyTests: verifyTests(inputs.testCommand, inputs.focusedCommand),
     round: String(round),
     roundRule: round >= 2 ? ROUND2_RULE.replace("{{round}}", String(round)) : "",
     previousVerdict: round >= 2 && inputs.previousVerdict ? `## Previous verdict\n\n${inputs.previousVerdict}\n` : "",

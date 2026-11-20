@@ -51,6 +51,22 @@ test("build settings are optional, strict, and validate output globs", () => {
   assert.ok(problems({ ...base(), build: { watch: true } }).includes("build.watch: unknown field"));
 });
 
+test("test.focused needs exactly one {files} placeholder and no other", () => {
+  const withFocused = (focused: string) => ({ ...base(), test: { ...base().test, focused } });
+  const template = "node scripts/test-focused.mjs {files}";
+  assert.equal(parseConfig(withFocused(template)).test.focused, template);
+  assert.equal(parseConfig(base()).test.focused, undefined);
+  for (const bad of ["node --test", "run {files} {files}", "run {files} {cwd}", "run {cwd}", "run {files", ""]) {
+    assert.ok(problems(withFocused(bad)).some((p) => p.startsWith("test.focused:")), JSON.stringify(bad));
+  }
+});
+
+test("init does not write test.focused", () => {
+  const root = tempDir();
+  initProject(root);
+  assert.equal("focused" in JSON.parse(readFileSync(join(root, ".devflow", "config.json"), "utf8")).test, false);
+});
+
 test("repository config regenerates plugin bundles", (t) => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
   if (!existsSync(join(root, ".git")) && !existsSync(join(root, ".devflow"))) {

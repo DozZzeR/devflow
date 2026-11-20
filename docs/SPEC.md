@@ -355,6 +355,8 @@ devflow hook pre-tool-use         # вызывается хуком Claude Code
 
 Валидируется через `zod`. Неизвестные поля являются ошибкой.
 
+The optional `test.focused` is a command template with exactly one `{files}` placeholder (and no other `{...}`). It is read from the base commit, like `build.generate`. When it is set, the implement, small and verify roles get it instead of the full `test.command`. The Claude hook allows only the template filled with one or more files separated by single spaces (at most 64). Each file is a relative path made of `[A-Za-z0-9_./-]`, has no `.` or `..` segment, does not start with `-`, and matches `test.paths`. Any other text is denied. Prompt placeholders: `{{focusedCommand}}`, `{{implementTests}}`, `{{verifyTests}}`. Verify does not rerun the full suite: the gate results are for the same snapshot (the hash is re-checked before PASS), and the verdict marks each piece of evidence as "confirmed by gates" or "checked additionally". The gates still run the full `test.command`.
+
 ## 10. Стек
 
 TypeScript, Node 22+, сборка `tsc` без бандлера, тесты `node:test`.
