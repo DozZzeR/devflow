@@ -1,176 +1,143 @@
 # TODO
 
-Живой список того, что мы с Claude держим в голове между сессиями. Пункт
-удаляется, когда сделан и проверен. Раздел «Наблюдаемые прогоны» целиком
-снимается, когда в нескольких прогонах подряд не всплывёт новых жуков.
+A running list of items Claude and I track between sessions. Remove each item when it is complete and verified. Remove the entire “Monitored runs” section after several consecutive runs uncover no new bugs.
 
-## Наблюдаемые прогоны (приоритет)
+## Monitored runs (priority)
 
-Цель: прогнать devflow на нескольких реальных задачах и внимательно смотреть
-за субагентами (ролями на `claude -p` / `codex exec`): их ошибками и качеством
-результата. По опыту 2026-11-18 качество сильно зависит от окружения и
-настроек безопасности CLI.
+Run devflow on several real tasks and watch the subagents (roles using `claude -p` / `codex exec`) closely. Track their errors and the quality of their results. The 2026-11-18 runs showed that quality depends heavily on the environment and CLI security settings.
 
-- [ ] Прогнать не меньше 3 реальных задач (хотя бы одну medium и одну small),
-      включая проект без OpenSpec и проект на OpenSpec.
-- [ ] На каждом прогоне записать в журнал ниже: задача, роли и модели,
-      длительность, токены, вердикты, что пошло не так.
-- [ ] Отдельно смотреть, что роль **реально видела**: могла ли читать репо,
-      запускать команды (в песочнице codex «blocked by policy» = пустой результат,
-      а не «всё хорошо»), какое окружение получила.
-- [ ] Проверять, что выход роли не пустышка: verdict с file:line, план с
-      конкретикой. Пустой или общий ответ — это баг окружения, а не «PASS».
-- [ ] Сравнить одну и ту же роль на `claude` и на `codex`: где качество выше,
-      где дешевле; уточнить пресеты моделей.
-- [ ] Прогнать на машине или профиле **без Claude** (только codex) и наоборот.
-- [ ] Посмотреть, как ведут себя лимиты подписок при нескольких прогонах подряд.
+- [ ] Run at least 3 real tasks (at least one medium and one small), including a project without OpenSpec and a project using OpenSpec.
+- [ ] For each run, record the task, roles and models, duration, tokens, verdicts, and problems in the log below.
+- [ ] Check what the role **actually saw**. Could it read the repo and run commands? In the codex sandbox, “blocked by policy” means the result is empty and the check is inconclusive. Check which environment the role received.
+- [ ] Check that the role's output has substance, with a verdict containing file:line references and a concrete plan. Treat an empty or generic reply as an environment bug. It cannot qualify as “PASS”.
+- [ ] Compare the same role on `claude` and `codex` for quality and cost, then refine the model presets.
+- [ ] Run on a machine or profile **without Claude** (codex only), then run the reverse setup.
+- [ ] Observe how subscription limits behave over several consecutive runs.
 
-### Журнал прогонов
+### Run log
 
-| Дата | Задача | Роли/модели | Итог | Что всплыло |
+| Date | Task | Roles/models | Result | Findings |
 |---|---|---|---|---|
-| 2026-11-18 | sandbox-calc `fix-sub` (small) | sonnet | DONE, 20 с | без замечаний; ворота pass, rollback подтвердил красный тест |
-| 2026-11-18 | sandbox-calc `add-muldiv` (medium), design | haiku → opus | design ok → отказ | баг промпта: Outputs перечислял 3 файла, opus не создал спеку и вписал её в design.md; встроенная проверка не заметила → исправлено, добавлен `approve --reject` |
-| 2026-11-18 | то же, переделка | opus | fail → ok | правило «все файлы свежие» ломало переделку (opus верно оставил хорошие файлы) → для переделки требуется изменение плана, не свежесть всех файлов |
-| 2026-11-18 | то же, implement → verify | sonnet → codex | REWORK (только low) → PASS, 3.4 мин, verify ~16–18 тыс. токенов | verify дал REWORK на одних low и пожаловался на отсутствие design.md → в промпт: REWORK только при high/medium, отсутствие design.md намеренно |
-| 2026-11-18 | verify `add-stage-run`, круг 1 (3.4 мин) | verify | REWORK, 11 | ворота могли сертифицировать версию, поменявшуюся во время прогона; копия verify делила .git; сбой запуска CLI падал исключением |
-| 2026-11-18 | verify `add-stage-run`, круг 2 (4.2 мин, только high) | verify | REWORK | 1 принято, дешёвое исправлено, остальное отложено |
-| 2026-11-18 | плагины на sandbox-calc | Claude Code (sonnet), Codex | ok | Claude: `--plugin-dir`, MCP-инструменты отработали; Codex: MCP-сервер в папке плагина нашёл проект по `projectDir`, но `codex exec` блокирует MCP-вызовы без разрешения → read-only инструменты разрешены в `.mcp.json` плагина |
-| 2026-11-18 | verify `add-runners` (codex gpt-6.2-sol) | verify | HUMAN | `--ignore-user-config` срезал доверие и Windows-песочницу, codex не читал репо → дефолт false |
-| 2026-11-18 | verify `add-runners`, круг 1 | verify | REWORK, 10 | таймаут не убивал дерево внутри песочницы codex (тест «зелёный» за 60 с); хук fail-open; ключи через env.pass |
-| 2026-11-18 | verify `add-runners`, круг 2 | verify | REWORK | дальше глубокое укрепление, см. «Отложенное» |
-| 2026-11-18 | ревью плана `add-gates` (codex, через `exec-role`) | verify | REWORK, 7 | ручной `complete gates ok` в обход проверок; «красный» = любая ошибка; setup только на базе; `.devflow/` целиком в исключениях |
-| 2026-11-18 | ворота на самом devflow (`add-gates`) | — | pass ×3, 95 с | rollback: npm ci, baseline 75 → tests-only красный (ошибка компиляции TS, законный TDD) → полный 98; дерево не тронуто |
-| 2026-11-18 | verify `add-gates`, круг 1 (5.2 мин) | verify | REWORK, 10 | тест-команда из рабочего конфига (роль могла бы подменить); запись в worktree через симлинк; исключения вместо blocked; в песочнице codex 2 теста падают из-за taskkill |
-| 2026-11-18 | verify `add-gates`, круг 2 (3.8 мин) | verify | REWORK | глубокое укрепление, дешёвое исправлено, остальное в «Отложенное из add-gates» |
-| 2026-11-18 | `verify-calibration` (medium) через devflow на себе | haiku → opus → sonnet → codex | REWORK (1 high, 1 low) → HUMAN | claude $1.10 по прайсу + codex 63 тыс.; ворота 4.3 мин; ворота упали на свежести бандла плагинов (нет шага генерации); implement-2 упал на 429 лимита подписки и съел попытку → HUMAN; high: разбор `context: \| # комментарий` в YAML |
-| 2026-11-18 | то же без devflow (одна сессия Opus, ветка `baseline/verify-calibration`) | opus | 149 pass, 4.5 мин | $0.79 по прайсу; YAML-случаи из high разбирает верно; контекст читает из рабочего дерева, то есть задача может ослабить свою же модель угроз (план devflow это закрыл) |
-| 2026-11-18 | `verify-calibration`, доводка (ревизия 2) | opus → codex sol (implement и verify) | ложный PASS sonnet → ревизия 2 → REWORK (high) → PASS, DONE | итог по задаче: claude ≈ $2.7 по прайсу (почти всё design opus + первый implement sonnet), codex ≈ 347 тыс. токенов; sonnet-verify пропустил high, которую codex нашёл; codex implement честно остановился на противоречии плана; всплыло: вердикт не доходил до implement, потерянный вердикт круга, BLOCKED, сброс попыток при новом плане, глобальный AGENTS.md codex ссылался на файл вне песочницы |
-| 2026-11-18 | `add-generate-step` (medium → complex) | codex luna → opus → codex sol (implement, verify) | REWORK → PLAN CONFLICT → ревизия 2 → REWORK (1 high) → автоэскалация, план переписан → PASS, DONE | модели и ворота 108 мин (план 7, прогоны 38+31+13+20), всего 157 мин с ожиданием одобрений; claude $2.57 по прайсу (только opus, 3 версии плана), codex 549 тыс. токенов; PLAN CONFLICT сработал сам; ворота раз упали на нестабильном тесте Windows (EPERM при очистке temp) |
+| 2026-11-18 | sandbox-calc `fix-sub` (small) | sonnet | DONE, 20 s | No findings. The gates returned pass, and rollback confirmed a failing test. |
+| 2026-11-18 | sandbox-calc `add-muldiv` (medium), design | haiku → opus | design ok → rejection | Prompt bug. Outputs listed 3 files. opus put the spec in design.md and skipped the separate file. The built-in check missed this → fixed, and `approve --reject` was added. |
+| 2026-11-18 | Same task, revision | opus | fail → ok | The “all files must be fresh” rule broke revisions (opus correctly kept valid files) → revisions now require a plan change and allow unchanged files. |
+| 2026-11-18 | Same task, implement → verify | sonnet → codex | REWORK (low only) → PASS, 3.4 min, verify ~16–18 thousand tokens | verify returned REWORK for low findings alone and flagged the missing design.md → the prompt now limits REWORK to high/medium findings and says design.md is intentionally absent. |
+| 2026-11-18 | verify `add-stage-run`, round 1 (3.4 min) | verify | REWORK, 11 | The gates could certify a version that changed during the run. The verify copy shared .git. A CLI launch failure threw an exception. |
+| 2026-11-18 | verify `add-stage-run`, round 2 (4.2 min, high only) | verify | REWORK | 1 finding accepted, low-effort fixes made, and the rest deferred. |
+| 2026-11-18 | Plugins on sandbox-calc | Claude Code (sonnet), Codex | ok | Claude's MCP tools worked with `--plugin-dir`. The Codex MCP server in the plugin directory found the project via `projectDir`, but `codex exec` blocks MCP calls without permission → read-only tools are allowed in the plugin's `.mcp.json`. |
+| 2026-11-18 | verify `add-runners` (codex gpt-6.2-sol) | verify | HUMAN | `--ignore-user-config` dropped trust and the Windows sandbox settings, so codex could not read the repo → default false. |
+| 2026-11-18 | verify `add-runners`, round 1 | verify | REWORK, 10 | A timeout failed to kill the process tree inside the codex sandbox (the test reported success after 60 s). The hook was fail-open. Keys passed through env.pass. |
+| 2026-11-18 | verify `add-runners`, round 2 | verify | REWORK | The remaining work requires more extensive hardening. See “Deferred”. |
+| 2026-11-18 | Plan review for `add-gates` (codex, via `exec-role`) | verify | REWORK, 7 | Manual `complete gates ok` bypassed checks. Any error counted as a failure. setup ran only on the base. All of `.devflow/` was excluded. |
+| 2026-11-18 | Gates on devflow itself (`add-gates`) | — | pass ×3, 95 s | rollback: npm ci, baseline 75 → tests-only failed (TS compilation error, valid TDD failure) → full run 98. The working tree was untouched. |
+| 2026-11-18 | verify `add-gates`, round 1 (5.2 min) | verify | REWORK, 10 | The test command came from the working config, which the role could replace. Writes reached the worktree via a symlink. Exceptions occurred in place of blocked. In the codex sandbox, 2 tests fail because of taskkill. |
+| 2026-11-18 | verify `add-gates`, round 2 (3.8 min) | verify | REWORK | More extensive hardening is needed. Low-effort fixes were made. The rest is in “Deferred from add-gates”. |
+| 2026-11-18 | `verify-calibration` (medium) using devflow on itself | haiku → opus → sonnet → codex | REWORK (1 high, 1 low) → HUMAN | claude $1.10 at list price + codex 63 thousand tokens. Gates took 4.3 min and failed the plugin bundle freshness check (missing generation step). implement-2 hit a 429 subscription limit and consumed an attempt → HUMAN. High finding: YAML parsing of `context: \| # comment`. |
+| 2026-11-18 | Same task without devflow (one Opus session, branch `baseline/verify-calibration`) | opus | 149 pass, 4.5 min | $0.79 at list price. It parses the YAML cases from the high finding correctly. It reads context from the working tree, so a task can weaken its own threat model (the devflow plan addressed this). |
+| 2026-11-18 | `verify-calibration`, final changes (revision 2) | opus → codex sol (implement and verify) | false PASS from sonnet → revision 2 → REWORK (high) → PASS, DONE | Task totals: claude ≈ $2.7 at list price (almost all from opus design + the first sonnet implement run), codex ≈ 347 thousand tokens. sonnet-verify missed a high finding that codex found. codex implement correctly stopped at a plan contradiction. Other findings included a verdict that never reached implement, a lost round verdict, BLOCKED, resetting attempts for a new plan, and a global codex AGENTS.md pointing outside the sandbox. |
+| 2026-11-18 | `add-generate-step` (medium → complex) | codex luna → opus → codex sol (implement, verify) | REWORK → PLAN CONFLICT → revision 2 → REWORK (1 high) → automatic escalation, plan rewritten → PASS, DONE | Models and gates took 108 min (plan 7, runs 38+31+13+20), or 157 min including approval waits. claude $2.57 at list price (opus only, 3 plan versions), codex 549 thousand tokens. PLAN CONFLICT triggered automatically. The gates failed once on a flaky Windows test (EPERM during temp cleanup). |
 
-## Известные грабли окружения
+## Known environment pitfalls
 
-- `codex exec` с не-терминальным stdin ждёт ввода вечно → stdin всегда закрывать.
-- `codex exec --ignore-user-config` теряет доверие к проекту и настройки Windows-песочницы.
-- `claude --bare` не читает OAuth → отключает подписку.
-- Дочерние процессы наследуют всё окружение сессии (ловили `MEMPALACE_TOKEN`) → только белый список.
-- На ChatGPT-аккаунте нет `gpt-5.5`; `fable` требует usage credits.
-- `taskkill` внутри песочницы codex может не сработать → ограниченный teardown и `killFailed`.
+- `codex exec` waits indefinitely with non-terminal stdin → always close stdin.
+- `codex exec --ignore-user-config` loses project trust and Windows sandbox settings.
+- `claude --bare` skips OAuth → subscription access is disabled.
+- Child processes inherit the entire session environment (`MEMPALACE_TOKEN` was observed) → use an allowlist only.
+- The ChatGPT account lacks `gpt-5.5`. `fable` requires usage credits.
+- `taskkill` can fail inside the codex sandbox → use bounded teardown and `killFailed`.
 
-## Отложенное из независимой проверки `add-runners`
+## Deferred from the independent review of `add-runners`
 
-- [ ] `enforced` у Claude держится на хуке; если пользователь отключит все хуки,
-      защиты нет → гарантию даёт ворота zone (следующее изменение).
-- [ ] Висячие симлинки в целевом пути хука; связанные родители у ожидаемых выходов.
-- [ ] Маскировка коротких (<8 символов) секретов; нераспознанный вывод `doctor`.
-- [ ] Относительные исполняемые в шаблоне `command` резолвятся от cwd devflow.
-- [ ] Имена standalone-логов с числовым суффиксом.
-- [ ] Job Object вместо `taskkill` на Windows; обход каталогов через дескрипторы.
+- [ ] Claude's `enforced` mode relies on the hook. Disabling all hooks removes that protection → the zone gate provides the guarantee (next change).
+- [ ] Dangling symlinks in the hook target path and linked parent directories of expected outputs.
+- [ ] Masking short secrets (<8 characters) and unrecognized `doctor` output.
+- [ ] Relative executable paths in the `command` template resolve from the devflow cwd.
+- [ ] Standalone log names with a numeric suffix.
+- [ ] Use a Job Object in place of `taskkill` on Windows and traverse directories by handle.
 
-## Отложенное из `add-gates`
+## Deferred from `add-gates`
 
-- [ ] Rollback считает «красным» весь прогон: ошибка компиляции или упавший
-      раннер неотличимы от упавшего assert. Нужна дотестовая оценка
-      (per-file rollback или разбор отчёта раннера).
-- [ ] Записи роли в игнорируемые git пути (`node_modules/` и т. п.) не видны воротам zone.
-- [ ] Триггер эскалации «diff вышел за файлы из triage» и verify двумя раннерами на complex.
-- [ ] Привязка вердикта verify к хэшу diff (SPEC §7).
-- [ ] Verify `add-gates`, круг 2: проверка ссылок у исходных путей и у префикса проекта при копировании в worktree; доверие `COMSPEC` и окружение тест-команды (сейчас наследуется целиком, команда берётся из конфига на базе); защита файлов состояния задачи от связанных каталогов; тест таймаута фазы tests-only.
+- [ ] Rollback treats the entire run as failing. A compilation error or runner crash looks the same as a failed assert. Add a check before testing (per-file rollback or parsing the runner report).
+- [ ] The zone gates do not see role writes to paths ignored by git (`node_modules/`, etc.).
+- [ ] Add the escalation trigger “diff extends beyond the files from triage” and use two runners for verify on complex.
+- [ ] Bind the verify verdict to the diff hash (SPEC §7).
+- [ ] Verify `add-gates`, round 2. Check for links in source paths and the project prefix when copying into a worktree. Check trust in `COMSPEC` and the test command environment (currently inherited in full, with the command taken from the base config). Protect task state files from linked directories. Test a timeout in the tests-only phase.
 
-## Отложенное из `add-stage-run`
+## Deferred from `add-stage-run`
 
-- [ ] Блокировка фонового запуска: атомарная запись метаданных и сериализованный разбор устаревших блокировок (сейчас `wx` + проверка pid).
-- [ ] Команда хука Claude на Windows: пути подставляются в строку оболочки; нужна точка входа без оболочки или экранирование под неё.
-- [ ] Ссылки в файлах плана при проверке design и в отпечатке плана.
-- [ ] Ворота tests/zone работают на живом дереве: правка, сделанная и откаченная во время прогона, не ловится проверкой снимка до/после. Решение — гонять tests тоже в снимке (как rollback).
-- [ ] Verify на codex может выполнять любые команды в своей копии (песочница codex); копия без `.git`, но с остальным проектом.
+- [ ] Background run locking needs atomic metadata writes and serialized stale lock handling (currently `wx` + a pid check).
+- [ ] The Claude hook command on Windows inserts paths into a shell string. Use a shell-free entry point or escape paths for the shell.
+- [ ] Links in plan files during design validation and plan fingerprinting.
+- [ ] The tests/zone gates run against the live tree. The before-and-after snapshot check misses edits made and reverted during the run. Run tests in a snapshot too (like rollback).
+- [ ] Verify on codex can run any command in its copy (within the codex sandbox). The copy contains the rest of the project and excludes `.git`.
 
-## Отложенное из `add-plugins-mcp`
+## Deferred from `add-plugins-mcp`
 
-- [ ] Запись ролей (`roles set` / `propose --apply`) без общего замка проекта: одновременные правки могут потерять одну.
-- [ ] Фоновые процессы devflow наследуют окружение сервера/CLI (модели внутри уже на белом списке).
-- [ ] MCP: `devflow_run` возвращает runId и свой статус, остальные фоновые задачи — jobId; свести к одному интерфейсу.
-- [ ] Проверка «проект не внутри папки плагина» лексическая (без realpath/алиасов).
-- [ ] `roles propose --probe` засчитывает модель по успешному выходу, не проверяя, что она ответила «OK».
-- [ ] Verify круг 2: подделанные записи задач/логов через симлинки в .devflow; одиночные ворота и пробы ролей без замка (запись состояния защищена проверкой updatedAt).
-- [ ] Установка плагинов из маркетплейса GitHub — проверить после merge (сейчас проверено через `--plugin-dir` и MCP-конфиг Codex).
+- [ ] Role writes (`roles set` / `propose --apply`) have no shared project lock. Concurrent edits can overwrite each other.
+- [ ] Background devflow processes inherit the server/CLI environment (the models already use an allowlist).
+- [ ] In MCP, `devflow_run` returns runId and its own status. Other background tasks return jobId. Use one interface.
+- [ ] The check that the project is outside the plugin directory is lexical (without realpath/aliases).
+- [ ] `roles propose --probe` accepts a model on successful exit without checking that it replied “OK”.
+- [ ] Verify round 2. Forged task and log records via symlinks in .devflow. Individual gates and role probes run without a lock (state writes are protected by the updatedAt check).
+- [ ] Check plugin installation from the GitHub marketplace after merge (currently verified via `--plugin-dir` and the Codex MCP config).
 
-## Из прогона `verify-calibration`
+## From the `verify-calibration` run
 
-- [x] Шаг генерации (`build.generate` / `build.outputs`) — `add-generate-step`.
-- [ ] Ошибка лимита подписки (429, `usage_limit_reached`) не считается попыткой:
-      задача ставится на паузу до сброса лимита, а не уходит в HUMAN.
-- [ ] `devflow usage <id>`: сумма токенов и цены по логам ролей (claude JSON, codex «tokens used»).
-- [x] **Баг, критично:** при REWORK implement не получал вердикт verify и разбор упавших ворот
-      (codex implement, 35 тыс. токенов, ничего не исправил). Исправлено в e5cf9ca.
-- [x] Implement останавливался с «план неверен», а devflow гнал ворота и verify по тому же коду.
-      Теперь строка `PLAN CONFLICT: ...` в ответе implement отклоняет план (ревизия +1, причина и
-      вердикт идут в design), повторный конфликт → HUMAN (`plan_conflicts_limit`).
-- [x] Sonnet в роли verify выдал вердикт в ответ, а не в файл → HUMAN. Теперь вердикт берётся из
-      JSON-ответа claude, если файла нет (из обычного лога нельзя: codex эхоит промпт).
-- [ ] Правки человека в рабочем дереве во время задачи (здесь `roles set` и TODO) ворота zone
-      приписывают роли → ложный outside_zone и автоэскалация в complex. Нужен снимок
-      «грязных» путей на старте implement или явное предупреждение `devflow status`.
-- [x] Вердикт не доходил до implement (e5cf9ca); PLAN CONFLICT и вердикт из ответа claude (7efacdc);
-      потерянный вердикт неудачного круга (ccafd7e); BLOCKED и сброс попыток при новом плане (a1b2601).
-- [ ] `devflow init`: создавать `.agents/instructions.md` (индекс наборов: SOLID для всех, DDD для бэка,
-      FDD для фронта) и ссылки из AGENTS.md/CLAUDE.md; роли читают индекс. Внешние пути в инструкциях
-      недоступны в песочнице codex, поэтому набор живёт в проекте (решение владельца 2026-11-18).
-- [ ] Наблюдение: verify на sonnet слабее codex (пропустил high на разборе YAML). Пока все роли кроме
-      design на codex (решение владельца 2026-11-18), независимость verify только за счёт контекста.
-- [ ] Автоэскалация после повторного REWORK переписывает план без роста номера ревизии;
-      по решению владельца новая версия плана должна получать новый номер.
-- [ ] Нестабильный тест `simultaneous starts: exactly one wins`: EPERM при удалении temp-каталога на Windows
-      (фоновый процесс ещё держит каталог). Очистка с повтором в `test/helpers`. Ронял ворота.
-- [ ] Verify ставит high мелким краевым случаям конфига (`././plugins/**`), которые пишет сам владелец,
-      то есть вне модели угроз. Уточнить рубрику: high только для критериев приёмки и угроз из контекста.
-- [ ] Динамический баланс вендоров: пользователь говорит «меньше Claude / больше Codex»
-      (или наоборот), devflow переключает готовую схему ролей (`roles scheme claude-light|codex-light|balanced`),
-      соблюдая правило «verify ≠ implement». Позже: автопереключение по остатку лимита (429).
-- [ ] При `language` ≠ `en` в промпте прямо требовать: структурные заголовки (`## Impact zone`,
-      `## Test plan`, `### Requirement:`, `#### Scenario:`) и SHALL/MUST/WHEN/THEN оставлять на
-      английском (так у коллеги на OpenSpec 1.15.0: артефакты на русском, ключевые слова на английском).
-- [ ] Совместимость OpenSpec: devflow в рантайме зовёт только `validate <id> --strict`; проверено,
-      что 1.15.0 валидирует наши спеки и change (10/10). Закрепить версию CLI в проекте пользователя
-      (`openspec.cli`) и в CI его же командой `openspec validate --all --strict --no-interactive`.
+- [x] Generation step (`build.generate` / `build.outputs`) — `add-generate-step`.
+- [ ] A subscription limit error (429, `usage_limit_reached`) should pause the task until the limit resets, leave the attempt count unchanged, and avoid HUMAN.
+- [ ] `devflow usage <id>` should total tokens and costs from role logs (claude JSON, codex “tokens used”).
+- [x] **Critical bug:** on REWORK, implement did not receive the verify verdict or the failed gate analysis (codex implement spent 35 thousand tokens and fixed nothing). Fixed in e5cf9ca.
+- [x] Implement stopped with “the plan is incorrect”, but devflow ran gates and verify on the same code.
+      A `PLAN CONFLICT: ...` line in the implement response now rejects the plan (revision +1, reason and
+      verdict go to design). A repeated conflict leads to HUMAN (`plan_conflicts_limit`).
+- [x] Sonnet in the verify role put its verdict in the response and omitted the file → HUMAN. The verdict now comes from the claude JSON response when the file is missing. The regular log is unsuitable because codex echoes the prompt.
+- [ ] The zone gates attribute human edits during a task to the role (here, `roles set` and TODO) → false outside_zone and automatic escalation to complex. Snapshot dirty paths when implement starts or add an explicit `devflow status` warning.
+- [x] Verdict failed to reach implement (e5cf9ca). PLAN CONFLICT and verdict from the claude response (7efacdc).
+      Lost verdict from a failed round (ccafd7e). BLOCKED and attempt reset for a new plan (a1b2601).
+- [ ] Have `devflow init` create `.agents/instructions.md` (an index of guidance sets: SOLID for all code, DDD for the backend, FDD for the frontend) and link to it from AGENTS.md/CLAUDE.md. Roles read the index. External instruction paths are unavailable in the codex sandbox, so the guidance lives in the project (owner decision 2026-11-18).
+- [ ] Observation: verify on sonnet is weaker than codex (it missed a high finding in YAML parsing). For now all roles except design use codex (owner decision 2026-11-18). Verify independence relies solely on its context.
+- [ ] Automatic escalation after repeated REWORK rewrites the plan without increasing the revision number. The owner decided that a new plan version must get a new number.
+- [ ] Flaky test `simultaneous starts: exactly one wins` hits EPERM when deleting a temp directory on Windows (the background process still holds the directory). Add cleanup retries in `test/helpers`. This caused gate failures.
+- [ ] Verify rates minor config edge cases (`././plugins/**`) as high even though the owner writes the config, placing them outside the threat model. Limit high findings to acceptance criteria and threats in the context.
+- [ ] Balance vendors dynamically. When the user says “less Claude / more Codex” (or the reverse), devflow switches to a preset role scheme (`roles scheme claude-light|codex-light|balanced`) while following “verify ≠ implement”. Later, switch automatically based on the remaining allowance (429).
+- [ ] When `language` ≠ `en`, explicitly require the prompt to keep structural headings (`## Impact zone`,
+      `## Test plan`, `### Requirement:`, `#### Scenario:`) and SHALL/MUST/WHEN/THEN in English (a colleague uses OpenSpec 1.15.0 this way, with artifacts in Russian and keywords in English).
+- [ ] OpenSpec compatibility. At runtime devflow calls only `validate <id> --strict`. We verified that
+      1.15.0 validates our specs and change (10/10). Pin the CLI version in the user's project
+      (`openspec.cli`) and use the same version in CI with `openspec validate --all --strict --no-interactive`.
 
-## Процесс
+## Process
 
-- [ ] Правило verify (принято 2026-11-18): лимит 2 круга; второй круг смотрит только
-      high-находки и регрессии замечаний первого круга. Заложить в промпт verify
-      вместе с `devflow run`.
+- [ ] Verify rule (adopted 2026-11-18). Limit to 2 rounds. The second round checks only high findings and regressions from the first round. Add this to the verify prompt along with `devflow run`.
 
-- [ ] Не писать скрипты правок через `python -c "..."` с обратными кавычками в bash:
-      2026-11-18 это выполнило подстановку команд (в том числе случайный `npm ci`
-      в репо). Только файл-скрипт или Edit.
+- [ ] Avoid using `python -c "..."` with backticks in bash for edits. On
+      2026-11-18 this caused command substitution (including an unintended `npm ci`
+      in the repo). Use a script file or Edit.
 
-- [ ] После `openspec archive` автоматически гонять `openspec validate --specs --strict`:
-      архив дважды оставил живые спеки с предупреждениями (placeholder Purpose,
-      слишком длинные требования). Встроить в ворота devflow.
-- [ ] Новые capability сразу писать с `## Purpose` в дельте, требования держать < 500 символов.
+- [ ] After `openspec archive`, automatically run `openspec validate --specs --strict`.
+      Archive twice left the live specs with warnings (placeholder Purpose and overly long requirements).
+      Add this to the devflow gates.
+- [ ] Include `## Purpose` in the delta for new capabilities from the start. Keep requirements < 500 characters.
 
-## Дорожная карта (следующие изменения)
+## Roadmap (next changes)
 
-- [x] Ворота: zone, rollback-check, tests (+ автоэскалация по SPEC §4.4) — `add-gates`.
-- [x] Промпты этапов + `devflow run` + адаптер OpenSpec — `add-stage-run`.
-- [x] Плагины Claude Code и Codex из одного источника скиллов — `add-plugins-mcp`.
-- [x] MCP-сервер (`devflow_run` в фоне, статус, лог) — `add-plugins-mcp`.
-- [x] Передача одобрения плана модели по явной команде пользователя — `add-plugins-mcp`.
-- [ ] Более жёсткое подтверждение одобрения через MCP (вне чата: код в терминале, elicitation клиента).
-- [ ] Роли и модели: `design_complex` — сильнейшая доступная модель (Fable только при наличии кредитов);
-      перебалансировка ролей перед началом работы над проектом или по команде пользователя;
-      предложение раскладки может делать модель, запускающая devflow.
+- [x] Gates: zone, rollback-check, tests (+ automatic escalation per SPEC §4.4) — `add-gates`.
+- [x] Stage prompts + `devflow run` + OpenSpec adapter — `add-stage-run`.
+- [x] Claude Code and Codex plugins from a single source of skills — `add-plugins-mcp`.
+- [x] MCP server (`devflow_run` in the background, status, log) — `add-plugins-mcp`.
+- [x] Delegate plan approval to a model on explicit user request — `add-plugins-mcp`.
+- [ ] Require stronger confirmation for approval via MCP (outside chat, using a terminal code or client elicitation).
+- [ ] Roles and models. Use the strongest available model for `design_complex` (Fable only when credits are available). Rebalance roles before work begins on a project or on user request. The model invoking devflow can propose the assignments.
 
-## Решения владельца (2026-11-18)
+## Owner decisions (2026-11-18)
 
-- Одобрение плана по умолчанию за человеком.
-- Вердикт: REWORK только при high/medium; low идут заметками при PASS.
-- Язык артефактов по умолчанию `en` (экономия токенов), если проект не выбрал другой.
-- Отложенное укрепление поднимаем только если критично для работоспособности; иначе ждём реальную задачу.
-- `MEMPALACE_TOKEN` не перевыпускаем: он и так доступен codex.
-- Трекер — TaskFrame; OpenProject на hetzner закрыт.
+- A human approves the plan by default.
+- Use REWORK only for high/medium findings. Report low findings as notes with PASS.
+- Default to `en` for artifacts to save tokens unless the project chooses another language.
+- Take up deferred hardening only when critical to operation. Otherwise, wait for a real task.
+- Keep the existing `MEMPALACE_TOKEN`. codex already has access to it.
+- TaskFrame is the tracker. The plan to run OpenProject on hetzner is closed.
 
-## Позже
+## Later
 
-- [ ] Как представить devflow публично: лицензия (склоняемся открыть), подача рядом с OpenSpec
-      (с упоминанием) или отдельно. Решаем, когда всё стабильно работает.
+- [ ] Decide how to present devflow publicly. Choose a license (leaning toward making it open) and decide whether to present it alongside OpenSpec (with a mention) or separately. Decide once everything works reliably.

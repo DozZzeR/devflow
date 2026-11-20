@@ -4,3 +4,4 @@
 - Design spec: `docs/SPEC.md`. Open work and decisions: `docs/TODO.md`.
 - Developer guide to roles, decisions and lifecycle transitions: `docs/DEVELOPMENT.md`.
 - Specs and changes: `openspec/` (OpenSpec format). Build and test: `npm test`.
+- Language: all text in this repository (code, comments, docs, specs, TODO) is English.
